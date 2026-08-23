@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -37,7 +37,10 @@ def _session_payload(result) -> dict:
         "printed": result.printed,
         "qr_url": result.qr_url,
         "cloudinary_url": result.cloudinary_url,
+        "cloudinary_photo_url": result.cloudinary_photo_url,
+        "cloudinary_layout_url": result.cloudinary_layout_url,
         "layout_url": f"/prints/{result.photo_id}_print.png",
+        "layout_color_url": f"/prints/{result.photo_id}_layout.png",
         "photo_url": f"/photos/{result.photo_id}.jpg",
         "frame_urls": [
             f"/photos/{result.photo_id}_{i}.jpg"
@@ -76,6 +79,7 @@ def build_service(cfg: Settings | None = None) -> PhotoboothService:
 
     layout = LayoutRenderer(
         template_path=cfg.print_template_path,
+        template_colored_path=cfg.print_template_colored_path,
         register_qr_url=cfg.register_qr_url,
         output_dir=cfg.prints_dir,
         portrait_aspect_w=cfg.portrait_aspect_w,
@@ -104,6 +108,7 @@ def build_service(cfg: Settings | None = None) -> PhotoboothService:
         storage=storage,
         cloudinary=cloudinary,
         qr_base_url=cfg.qr_base_url,
+        public_base_url=cfg.public_base_url,
         prints_dir=cfg.prints_dir,
         gphoto_mode=CaptureMode(
             burst_count=1,
@@ -232,6 +237,20 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         return JSONResponse(_session_payload(result))
 
+    @app.get("/d/{photo_id}")
+    async def download_redirect(photo_id: str) -> RedirectResponse:
+        target = booth.resolve_download_target(photo_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        return RedirectResponse(url=target, status_code=302)
+
+    @app.get("/api/photo/{photo_id}")
+    async def api_photo_assets(photo_id: str) -> JSONResponse:
+        assets = booth.guest_assets(photo_id)
+        if assets is None:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        return JSONResponse(assets)
+
     @app.get("/photos/{photo_id}.jpg")
     async def get_photo(photo_id: str) -> FileResponse:
         path = booth.storage.get_photo(photo_id)
@@ -248,17 +267,18 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
 
     @app.get("/photo/{photo_id}")
     async def public_photo_page(photo_id: str, request: Request) -> HTMLResponse:
-        path = booth.storage.get_photo(photo_id)
-        if path is None:
+        if booth.guest_assets(photo_id) is None:
             raise HTTPException(status_code=404, detail="Photo not found")
         if spa_enabled:
             return FileResponse(FRONTEND_DIST / "index.html")
+        assets = booth.guest_assets(photo_id) or {}
         return TEMPLATES.TemplateResponse(
             "photo.html",
             {
                 "request": request,
                 "photo_id": photo_id,
-                "photo_url": f"/photos/{photo_id}.jpg",
+                "photo_url": assets.get("photo_url") or f"/photos/{photo_id}.jpg",
+                "layout_url": assets.get("layout_url") or f"/prints/{photo_id}_layout.png",
                 "org_name": cfg.org_name,
             },
         )

@@ -34,6 +34,12 @@ class CloudinaryStorage:
     def public_id_for(self, photo_id: str) -> str:
         return f"{self.folder}/{photo_id}" if self.folder else photo_id
 
+    def public_id_photo(self, photo_id: str) -> str:
+        return self.public_id_for(f"{photo_id}_photo")
+
+    def public_id_layout(self, photo_id: str) -> str:
+        return self.public_id_for(f"{photo_id}_layout")
+
     def expected_url(self, photo_id: str, ext: str = "png") -> str:
         """URL ổn định (không version) — dùng trước khi upload để nhúng QR."""
         if not self.cloud_name:

@@ -13,8 +13,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Dưới ngưỡng này coi như đã đủ ngắn cho QR 148 px @ EC-L.
-SHORT_URL_MAX_LEN = 40
+# Dưới ngưỡng này coi như đủ ngắn cho QR 122 px @ EC-L (không gọi dịch vụ bên thứ ba).
+SHORT_URL_MAX_LEN = 48
 _USER_AGENT = "BKFirePhotobooth/1.0 (+thermal-qr)"
 _LOCK = threading.Lock()
 _MEMORY: dict[str, str] = {}
@@ -30,6 +30,9 @@ def shorten_url(
     original = (url or "").strip()
     if not original:
         return original
+    # Thử QR trực tiếp Cloudinary — không rút gọn qua dịch vụ bên thứ ba.
+    if "res.cloudinary.com" in original:
+        return original
     if len(original) <= SHORT_URL_MAX_LEN and original.startswith(("http://", "https://")):
         return original
 
@@ -37,7 +40,8 @@ def shorten_url(
     if cached:
         return cached
 
-    short = _try_tinyurl(original, timeout) or _try_cleanuri(original, timeout)
+    # cleanuri: redirect thẳng, không trang quảng cáo (TinyURL đã bỏ vì có interstitial).
+    short = _try_cleanuri(original, timeout)
     if not short or not short.startswith("http"):
         logger.warning("URL shorten failed — dùng URL gốc (%d ký tự)", len(original))
         return original
@@ -46,15 +50,6 @@ def shorten_url(
     _cache_set(original, short, cache_path)
     logger.info("Shortened URL %d→%d chars: %s", len(original), len(short), short)
     return short
-
-
-def _try_tinyurl(url: str, timeout: float) -> Optional[str]:
-    api = "https://tinyurl.com/api-create.php?" + urllib.parse.urlencode({"url": url})
-    try:
-        return _http_get(api, timeout)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("tinyurl failed: %s", exc)
-        return None
 
 
 def _try_cleanuri(url: str, timeout: float) -> Optional[str]:

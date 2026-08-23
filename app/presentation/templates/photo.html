@@ -21,8 +21,20 @@
     <span class="event-pill">📸 Photobooth · Club Day 2026</span>
     <h1>Ảnh Club Day của bạn</h1>
     <p class="muted">Mã: {{ photo_id }}</p>
-    <img class="guest-photo" src="{{ photo_url }}" alt="Ảnh photobooth" />
-    <a class="cta cta--compact" href="{{ photo_url }}" download="bkfire-{{ photo_id }}.jpg">Tải ảnh xuống</a>
+
+    <section class="guest-section">
+      <h2 class="guest-section__title">Ảnh màu</h2>
+      <img class="guest-photo" src="{{ photo_url }}" alt="Ảnh photobooth màu" />
+      <a class="cta cta--compact" href="{{ photo_url }}" download="bkfire-{{ photo_id }}.jpg">Tải ảnh màu</a>
+    </section>
+
+    {% if layout_url %}
+    <section class="guest-section">
+      <h2 class="guest-section__title">Layout in</h2>
+      <img class="guest-layout" src="{{ layout_url }}" alt="Layout photobooth" />
+      <a class="cta cta--compact cta--outline" href="{{ layout_url }}" download="bkfire-{{ photo_id }}-layout.png">Tải layout in</a>
+    </section>
+    {% endif %}
   </main>
 </body>
 </html>

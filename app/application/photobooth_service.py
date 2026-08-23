@@ -52,6 +52,7 @@ class PhotoboothService:
         storage: FileStorage,
         cloudinary: Optional[CloudinaryStorage] = None,
         qr_base_url: str = "",
+        public_base_url: str = "",
         gphoto_mode: CaptureMode | None = None,
         webcam_mode: CaptureMode | None = None,
         burst_count: int = 1,
@@ -64,6 +65,7 @@ class PhotoboothService:
         self.storage = storage
         self.cloudinary = cloudinary
         self.qr_base_url = qr_base_url
+        self.public_base_url = (public_base_url or "").strip().rstrip("/")
         self.prints_dir = prints_dir or getattr(layout, "output_dir", None)
         self.gphoto_mode = gphoto_mode or CaptureMode(
             burst_count=1,
@@ -151,20 +153,13 @@ class PhotoboothService:
         download_path = self.layout.render_photo_color(frame_paths, session_id)
         main_photo = self.storage.archive_photo(download_path, session_id)
 
-        qr_url = self._fallback_qr(request.qr_base_url, session_id)
-        upload_note = ""
-        cloudinary_url: str | None = None
-        print_asset_id = f"{session_id}_print"
-
-        # QR trỏ tới full layout trên Cloudinary (dự đoán URL trước khi upload).
-        if self.cloudinary and self.cloudinary.enabled:
-            try:
-                download_qr = self.cloudinary.expected_url(print_asset_id, ext="png")
-            except CloudinaryError:
-                download_qr = qr_url
-        else:
-            download_qr = qr_url
-            upload_note = " (Cloudinary chưa cấu hình — ảnh chỉ có trên máy local)"
+        # QR DOWNLOAD → Cloudinary layout màu (chưa dither). Dự đoán URL ổn định trước khi upload.
+        download_qr, upload_note_pre = self._download_qr_url(request.qr_base_url, session_id)
+        layout_color_path = self.layout.render_layout_color_to_path(
+            photo_paths=frame_paths,
+            qr_url=download_qr,
+            photo_id=session_id,
+        )
 
         dither = request.dither_style if request.dither_style in ("comic", "floyd") else "floyd"
         layout_path = self.layout.render_to_path(
@@ -174,25 +169,14 @@ class PhotoboothService:
             dither_style=dither,  # type: ignore[arg-type]
         )
 
-        if self.cloudinary and self.cloudinary.enabled:
-            try:
-                cloudinary_url = self.cloudinary.upload_photo(
-                    layout_path,
-                    print_asset_id,
-                    image_format="png",
-                )
-                # Giữ URL ổn định (không version) trong QR / response nếu có thể.
-                download_qr = self.cloudinary.expected_url(print_asset_id, ext="png")
-            except CloudinaryError as exc:
-                logger.exception("Cloudinary upload failed for %s", session_id)
-                upload_note = f" Upload Cloudinary lỗi: {exc}"
-                download_qr = qr_url
-                layout_path = self.layout.render_to_path(
-                    photo_paths=frame_paths,
-                    qr_url=download_qr,
-                    photo_id=session_id,
-                    dither_style=dither,  # type: ignore[arg-type]
-                )
+        cloudinary_photo_url, cloudinary_layout_url, upload_note = self._upload_guest_assets(
+            session_id,
+            main_photo,
+            layout_color_path,
+        )
+        if cloudinary_layout_url:
+            download_qr = cloudinary_layout_url
+        upload_note = upload_note or upload_note_pre
 
         register_qr = (self.layout.register_qr_url or "").strip()
 
@@ -219,10 +203,13 @@ class PhotoboothService:
             faculty=request.faculty or "",
             source_path=main_photo,
             layout_path=layout_path,
+            layout_color_path=layout_color_path,
             qr_url=download_qr,
             printed=printed,
             message=message,
-            cloudinary_url=cloudinary_url,
+            cloudinary_url=cloudinary_layout_url,
+            cloudinary_photo_url=cloudinary_photo_url,
+            cloudinary_layout_url=cloudinary_layout_url,
             frame_paths=frame_paths,
         )
         self._remember_print(result, camera_source=source, dither_style=dither)
@@ -260,16 +247,12 @@ class PhotoboothService:
                 raise FileNotFoundError(f"Không tìm thấy ảnh id={photo_id}")
             frames = [source]
 
-        cloudinary_url: str | None = None
-        qr_url = self._fallback_qr(qr_base_url, photo_id)
-        print_asset_id = f"{photo_id}_print"
-        if self.cloudinary and self.cloudinary.enabled:
-            try:
-                download_qr = self.cloudinary.expected_url(print_asset_id, ext="png")
-            except CloudinaryError:
-                download_qr = qr_url
-        else:
-            download_qr = qr_url
+        download_qr, _ = self._download_qr_url(qr_base_url, photo_id)
+        layout_color_path = self.layout.render_layout_color_to_path(
+            photo_paths=frames,
+            qr_url=download_qr,
+            photo_id=photo_id,
+        )
 
         dither = dither_style if dither_style in ("comic", "floyd") else "floyd"
         layout_path = self.layout.render_to_path(
@@ -279,23 +262,14 @@ class PhotoboothService:
             dither_style=dither,  # type: ignore[arg-type]
         )
 
-        if self.cloudinary and self.cloudinary.enabled:
-            try:
-                cloudinary_url = self.cloudinary.upload_photo(
-                    layout_path,
-                    print_asset_id,
-                    image_format="png",
-                )
-                download_qr = self.cloudinary.expected_url(print_asset_id, ext="png")
-            except CloudinaryError as exc:
-                logger.warning("Reprint Cloudinary upload failed: %s", exc)
-                download_qr = qr_url
-                layout_path = self.layout.render_to_path(
-                    photo_paths=frames,
-                    qr_url=download_qr,
-                    photo_id=photo_id,
-                    dither_style=dither,  # type: ignore[arg-type]
-                )
+        main_photo = self.storage.get_photo(photo_id) or frames[0]
+        cloudinary_photo_url, cloudinary_layout_url, _ = self._upload_guest_assets(
+            photo_id,
+            main_photo,
+            layout_color_path,
+        )
+        if cloudinary_layout_url:
+            download_qr = cloudinary_layout_url
 
         register_qr = (self.layout.register_qr_url or "").strip()
         copies = max(1, min(20, int(copies or 1)))
@@ -311,15 +285,18 @@ class PhotoboothService:
         result = SessionResult(
             photo_id=photo_id,
             faculty=faculty or "",
-            source_path=frames[0],
+            source_path=main_photo,
             layout_path=layout_path,
+            layout_color_path=layout_color_path,
             qr_url=download_qr,
             printed=True,
             message=(
                 f"In lại thành công{copies_note} "
                 f"({'comic-dot' if dither == 'comic' else 'Floyd–Steinberg'})."
             ),
-            cloudinary_url=cloudinary_url,
+            cloudinary_url=cloudinary_layout_url,
+            cloudinary_photo_url=cloudinary_photo_url,
+            cloudinary_layout_url=cloudinary_layout_url,
             frame_paths=frames,
         )
         self._remember_print(result, dither_style=dither)
@@ -355,43 +332,30 @@ class PhotoboothService:
         download_path = self.layout.render_photo_color(frames, session_id)
         main_photo = self.storage.archive_photo(download_path, session_id)
 
-        cloudinary_url: str | None = None
-        qr_url = self._fallback_qr(qr_base_url, session_id)
-        print_asset_id = f"{session_id}_print"
-        if self.cloudinary and self.cloudinary.enabled:
-            try:
-                download_qr = self.cloudinary.expected_url(print_asset_id, ext="png")
-            except CloudinaryError:
-                download_qr = qr_url
-        else:
-            download_qr = qr_url
-
+        download_qr, upload_note_pre = self._download_qr_url(qr_base_url, session_id)
+        layout_color_path = self.layout.render_layout_color_to_path(
+            photo_paths=frames,
+            qr_url=download_qr,
+            photo_id=session_id,
+        )
         layout_path = self.layout.render_to_path(
             photo_paths=frames,
             qr_url=download_qr,
             photo_id=session_id,
         )
 
-        if self.cloudinary and self.cloudinary.enabled:
-            try:
-                cloudinary_url = self.cloudinary.upload_photo(
-                    layout_path,
-                    print_asset_id,
-                    image_format="png",
-                )
-                download_qr = self.cloudinary.expected_url(print_asset_id, ext="png")
-            except CloudinaryError as exc:
-                logger.warning("Demo Cloudinary upload failed: %s", exc)
-                download_qr = qr_url
-                layout_path = self.layout.render_to_path(
-                    photo_paths=frames,
-                    qr_url=download_qr,
-                    photo_id=session_id,
-                )
+        cloudinary_photo_url, cloudinary_layout_url, upload_note = self._upload_guest_assets(
+            session_id,
+            main_photo,
+            layout_color_path,
+        )
+        if cloudinary_layout_url:
+            download_qr = cloudinary_layout_url
+        upload_note = upload_note or upload_note_pre
 
         register_qr = (self.layout.register_qr_url or "").strip()
         printed = False
-        message = "Demo đã render."
+        message = f"Demo đã render.{upload_note}"
         try:
             self.printer.print_image(
                 layout_path,
@@ -399,18 +363,21 @@ class PhotoboothService:
                 register_url=register_qr,
             )
             printed = True
-            message = "Demo: layout + in thành công."
+            message = f"Demo: layout + in thành công.{upload_note}"
         except PrinterError as exc:
-            message = f"Demo: render OK, in thất bại: {exc}"
+            message = f"Demo: render OK, in thất bại: {exc}.{upload_note}"
         result = SessionResult(
             photo_id=session_id,
             faculty=faculty,
             source_path=main_photo,
             layout_path=layout_path,
+            layout_color_path=layout_color_path,
             qr_url=download_qr,
             printed=printed,
             message=message,
-            cloudinary_url=cloudinary_url,
+            cloudinary_url=cloudinary_layout_url,
+            cloudinary_photo_url=cloudinary_photo_url,
+            cloudinary_layout_url=cloudinary_layout_url,
             frame_paths=frames,
         )
         self._remember_print(result)
@@ -427,6 +394,7 @@ class PhotoboothService:
             "faculty": result.faculty,
             "printed": result.printed,
             "layout_url": f"/prints/{result.photo_id}_print.png",
+            "layout_color_url": f"/prints/{result.photo_id}_layout.png",
             "photo_url": f"/photos/{result.photo_id}.jpg",
             "source": camera_source,
             "dither_style": dither_style or "floyd",
@@ -469,6 +437,100 @@ class PhotoboothService:
         self.burst_interval_sec = 0.0
         self.layout.portrait_aspect_w = mode.portrait_aspect_w
         self.layout.portrait_aspect_h = mode.portrait_aspect_h
+
+    def _download_qr_url(self, request_base: str, photo_id: str) -> tuple[str, str]:
+        """URL nhúng vào QR DOWNLOAD — ưu tiên Cloudinary layout màu trực tiếp."""
+        if self.cloudinary and self.cloudinary.enabled:
+            try:
+                return (
+                    self.cloudinary.expected_url(f"{photo_id}_layout", ext="png"),
+                    "",
+                )
+            except CloudinaryError:
+                pass
+
+        if self.public_base_url:
+            return f"{self.public_base_url}/d/{photo_id}", ""
+
+        return (
+            self._fallback_qr(request_base, photo_id),
+            " (Cloudinary chưa cấu hình — QR dùng QR_BASE_URL)",
+        )
+
+    def resolve_download_target(self, photo_id: str) -> str | None:
+        """Đích redirect cho ``GET /d/{photo_id}`` — layout màu trên Cloudinary hoặc local."""
+        assets = self.guest_assets(photo_id)
+        if not assets:
+            return None
+        target = assets.get("cloudinary_layout_url") or assets.get("layout_url")
+        return str(target).strip() if target else None
+
+    def _upload_guest_assets(
+        self,
+        photo_id: str,
+        photo_path: Path,
+        layout_color_path: Path,
+    ) -> tuple[str | None, str | None, str]:
+        """Upload portrait màu + layout màu lên Cloudinary. Returns (photo_url, layout_url, note)."""
+        if not self.cloudinary or not self.cloudinary.enabled:
+            return None, None, " (Cloudinary chưa cấu hình — ảnh chỉ có trên máy local)"
+        photo_asset = f"{photo_id}_photo"
+        layout_asset = f"{photo_id}_layout"
+        try:
+            photo_url = self.cloudinary.upload_photo(
+                photo_path,
+                photo_asset,
+                image_format="jpg",
+            )
+            layout_url = self.cloudinary.upload_photo(
+                layout_color_path,
+                layout_asset,
+                image_format="png",
+            )
+            return photo_url, layout_url, ""
+        except CloudinaryError as exc:
+            logger.exception("Cloudinary upload failed for %s", photo_id)
+            return None, None, f" Upload Cloudinary lỗi: {exc}"
+
+    def guest_assets(self, photo_id: str) -> dict | None:
+        """Resolve download URLs for guest page (Cloudinary preferred, local fallback)."""
+        photo_local = self.storage.get_photo(photo_id)
+        layout_local = (
+            (self.prints_dir / f"{photo_id}_layout.png")
+            if self.prints_dir
+            else None
+        )
+        has_layout = layout_local is not None and layout_local.exists()
+        if photo_local is None and not has_layout:
+            return None
+
+        local_photo_url = f"/photos/{photo_id}.jpg"
+        local_layout_url = f"/prints/{photo_id}_layout.png"
+
+        photo_url = local_photo_url
+        layout_url = local_layout_url if has_layout else None
+        cloud_photo: str | None = None
+        cloud_layout: str | None = None
+
+        if self.cloudinary and self.cloudinary.enabled:
+            try:
+                cloud_photo = self.cloudinary.expected_url(f"{photo_id}_photo", ext="jpg")
+                cloud_layout = self.cloudinary.expected_url(f"{photo_id}_layout", ext="png")
+                photo_url = cloud_photo
+                if has_layout:
+                    layout_url = cloud_layout
+            except CloudinaryError:
+                pass
+
+        return {
+            "photo_id": photo_id,
+            "photo_url": photo_url,
+            "layout_url": layout_url,
+            "photo_url_local": local_photo_url if photo_local else None,
+            "layout_url_local": local_layout_url if has_layout else None,
+            "cloudinary_photo_url": cloud_photo,
+            "cloudinary_layout_url": cloud_layout if has_layout else None,
+        }
 
     def _fallback_qr(self, request_base: str, photo_id: str) -> str:
         base = (request_base or self.qr_base_url or "").strip()

@@ -34,6 +34,9 @@ class SessionResult:
     message: str
     captured_at: datetime = field(default_factory=datetime.now)
     cloudinary_url: str | None = None
+    cloudinary_photo_url: str | None = None
+    cloudinary_layout_url: str | None = None
+    layout_color_path: Path | None = None
     frame_paths: list[Path] = field(default_factory=list)
 
     @staticmethod

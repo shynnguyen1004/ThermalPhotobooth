@@ -29,8 +29,11 @@ QR_DOWNLOAD_BOX = (21, 801, 122, 122)   # left — SCAN TO DOWNLOAD
 QR_REGISTER_BOX = (244, 801, 122, 122)  # right — SCAN TO REGISTER
 QR_QUIET_PX = 2                         # quiet zone trong ô
 QR_MIN_MODULE_PX = 3                    # dưới ~0.37 mm/module điện thoại khó quét trên giấy nhiệt
-# Cả 2 QR luôn resize về cùng cạnh (giữ hệ số 0.70 như đang dùng).
-QR_RENDER_SIZE = int(round((min(QR_DOWNLOAD_BOX[2], QR_DOWNLOAD_BOX[3]) - 2 * QR_QUIET_PX) * 0.85))
+# Cả 2 QR cùng cạnh — fill ô trừ quiet zone (0.85 × 1.15 ≈ +15% so với trước).
+QR_SIZE_RATIO = 0.85 * 1.15
+QR_RENDER_SIZE = int(
+    round((min(QR_DOWNLOAD_BOX[2], QR_DOWNLOAD_BOX[3]) - 2 * QR_QUIET_PX) * QR_SIZE_RATIO)
+)
 TEXT_THRESHOLD = 160                  # template AA edges darker than this go solid black
 DOWNLOAD_SCALE = 3                    # color photo (upload/download) resolution multiplier
 
@@ -61,6 +64,7 @@ class LayoutRenderer:
         portrait_aspect_h: int = 4,
         remove_background: bool = False,
         frame_border_path: Optional[Path] = None,
+        template_colored_path: Optional[Path] = None,
     ) -> None:
         self.register_qr_url = register_qr_url
         self.output_dir = output_dir
@@ -70,7 +74,11 @@ class LayoutRenderer:
         self.dither_style: DitherStyle = "floyd"
         if self.output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True)
-        self._template = self._load_template(Path(template_path))
+        template_path = Path(template_path)
+        colored_path = Path(template_colored_path) if template_colored_path else template_path
+        self._template = self._load_template(template_path)
+        self._template_rgb = self._load_template_rgb(template_path)
+        self._template_colored_rgb = self._load_template_colored(colored_path)
         self._frame = self._load_frame(Path(frame_border_path) if frame_border_path else None)
         self._frame_resized: dict[tuple[int, int], Image.Image] = {}
 
@@ -134,6 +142,54 @@ class LayoutRenderer:
         )
         return self.output_dir / f"{photo_id}_print.png"
 
+    def render_layout_color(
+        self,
+        photo_paths: Path | Sequence[Path],
+        qr_url: str,
+        photo_id: str,
+        save: bool = True,
+    ) -> Image.Image:
+        """Full strip for guest download — colored template + photo + QR, no dither."""
+        paths = self._normalize_paths(photo_paths)
+        canvas = self._template_colored_rgb.copy()
+
+        photo = paths[0] if paths else None
+        photo_block = self._photo_block(photo, (PHOTO_BOX[2], PHOTO_BOX[3]), as_gray=False)
+        photo_block = self._apply_frame(photo_block, binary=False)
+        canvas.paste(photo_block.convert("RGB"), (PHOTO_BOX[0], PHOTO_BOX[1]))
+
+        if qr_url.strip():
+            self._paste_qr(canvas, qr_url.strip(), QR_DOWNLOAD_BOX, label="download")
+        if self.register_qr_url.strip():
+            self._paste_qr(
+                canvas,
+                self.register_qr_url.strip(),
+                QR_REGISTER_BOX,
+                label="register",
+            )
+
+        if save and self.output_dir and photo_id:
+            out = self.output_dir / f"{photo_id}_layout.png"
+            canvas.save(out)
+            logger.info("Saved color layout → %s", out)
+        return canvas
+
+    def render_layout_color_to_path(
+        self,
+        photo_paths: Path | Sequence[Path],
+        qr_url: str,
+        photo_id: str,
+    ) -> Path:
+        if not self.output_dir:
+            raise ValueError("output_dir is required for render_layout_color_to_path")
+        self.render_layout_color(
+            photo_paths=photo_paths,
+            qr_url=qr_url,
+            photo_id=photo_id,
+            save=True,
+        )
+        return self.output_dir / f"{photo_id}_layout.png"
+
     def render_photo_color(
         self,
         photo_paths: Path | Sequence[Path],
@@ -172,6 +228,42 @@ class LayoutRenderer:
         white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
         gray = Image.alpha_composite(white, rgba).convert("L")
         return gray.point(lambda v: 0 if v < TEXT_THRESHOLD else 255)
+
+    @staticmethod
+    def _load_template_rgb(path: Path) -> Image.Image:
+        """RGB template for guest color strip (logos/text on white, photo area empty)."""
+        if not path.exists():
+            raise FileNotFoundError(f"Không tìm thấy template in: {path}")
+        rgba = Image.open(path).convert("RGBA")
+        if rgba.size != TEMPLATE_SIZE:
+            raise ValueError(
+                f"Template {path} phải đúng {TEMPLATE_SIZE[0]}x{TEMPLATE_SIZE[1]} px "
+                f"(hiện là {rgba.size[0]}x{rgba.size[1]})."
+            )
+        white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        return Image.alpha_composite(white, rgba).convert("RGB")
+
+    @staticmethod
+    def _load_template_colored(path: Path) -> Image.Image:
+        """RGB colored template for Cloudinary guest strip (scaled to TEMPLATE_SIZE)."""
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Không tìm thấy template màu: {path} — đặt print_template_colored.png vào assets/."
+            )
+        rgba = Image.open(path).convert("RGBA")
+        white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        rgb = Image.alpha_composite(white, rgba).convert("RGB")
+        if rgb.size != TEMPLATE_SIZE:
+            logger.info(
+                "Scaled colored template %s from %sx%s → %sx%s",
+                path,
+                rgb.width,
+                rgb.height,
+                TEMPLATE_SIZE[0],
+                TEMPLATE_SIZE[1],
+            )
+            rgb = rgb.resize(TEMPLATE_SIZE, Image.Resampling.LANCZOS)
+        return rgb
 
     @staticmethod
     def _load_frame(path: Optional[Path]) -> Optional[Image.Image]:
@@ -347,5 +439,9 @@ class LayoutRenderer:
         # Chỉ xóa/đè đúng vùng QR — không wipe cả box (tránh che chữ trên/dưới).
         ox = x + (w - img.width) // 2
         oy = y + (h - img.height) // 2
-        canvas.paste(255, (ox, oy, ox + img.width, oy + img.height))
-        canvas.paste(img, (ox, oy))
+        wipe = 255 if canvas.mode == "L" else (255, 255, 255)
+        canvas.paste(wipe, (ox, oy, ox + img.width, oy + img.height))
+        if canvas.mode == "RGB":
+            canvas.paste(img.convert("RGB"), (ox, oy))
+        else:
+            canvas.paste(img, (ox, oy))

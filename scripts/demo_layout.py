@@ -33,6 +33,7 @@ def main() -> None:
 
     layout = LayoutRenderer(
         template_path=settings.print_template_path,
+        template_colored_path=settings.print_template_colored_path,
         register_qr_url=settings.register_qr_url,
         output_dir=settings.prints_dir,
         portrait_aspect_w=settings.portrait_aspect_w,

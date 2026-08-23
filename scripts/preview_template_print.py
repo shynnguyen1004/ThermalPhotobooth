@@ -46,6 +46,7 @@ def main() -> None:
 
     renderer = LayoutRenderer(
         template_path=settings.print_template_path,
+        template_colored_path=settings.print_template_colored_path,
         register_qr_url=settings.register_qr_url,
         remove_background=settings.remove_background,
         frame_border_path=settings.frame_border_path,

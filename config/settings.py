@@ -30,6 +30,8 @@ class Settings(BaseSettings):
 
     # Print template — chữ/logo/QR frames cố định (384x955 @ 203 DPI)
     print_template_path: Path = ROOT_DIR / "assets" / "print_template.png"
+    # Template màu cho layout guest / Cloudinary (cùng bố cục, có thể khác kích thước gốc)
+    print_template_colored_path: Path = ROOT_DIR / "assets" / "print_template_colored.png"
     # Film-strip overlay chèn lên ảnh sau khi chụp (RGBA, vùng trong suốt = ảnh)
     frame_border_path: Path = ROOT_DIR / "assets" / "frame_border.png"
 
@@ -44,9 +46,12 @@ class Settings(BaseSettings):
     # legacy alias — same as photos_dir
     uploads_dir: Path = ROOT_DIR / "data" / "photos"
 
-    # QR download fallback khi chưa có Cloudinary — `{id}` = photo id.
-    # Khi upload OK, phiếu in dùng luôn secure_url Cloudinary.
+    # QR download — trang guest `{id}` = photo id (fallback khi không có PUBLIC_BASE_URL).
     qr_base_url: str = "https://my-photobooth.app/photo/{id}"
+
+    # URL public của booth — QR DOWNLOAD trỏ tới {PUBLIC_BASE_URL}/d/{id} (302 thẳng Cloudinary, không quảng cáo).
+    # Production: https://your-domain.com · LAN cùng Wi‑Fi: http://192.168.x.x:8000
+    public_base_url: str = ""
 
     # QR "SCAN TO REGISTER" — Google Form (placeholder tới khi có link thật)
     register_qr_url: str = "https://www.youtube.com"
