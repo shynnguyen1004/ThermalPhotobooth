@@ -439,7 +439,7 @@ class PhotoboothService:
         self.layout.portrait_aspect_h = mode.portrait_aspect_h
 
     def _download_qr_url(self, request_base: str, photo_id: str) -> tuple[str, str]:
-        """URL nhúng vào QR DOWNLOAD — ưu tiên Cloudinary layout màu trực tiếp."""
+        """URL nhúng vào QR DOWNLOAD — trỏ thẳng Cloudinary layout màu (không qua Render)."""
         if self.cloudinary and self.cloudinary.enabled:
             try:
                 return (
@@ -459,6 +459,11 @@ class PhotoboothService:
 
     def resolve_download_target(self, photo_id: str) -> str | None:
         """Đích redirect cho ``GET /d/{photo_id}`` — layout màu trên Cloudinary hoặc local."""
+        if self.cloudinary and self.cloudinary.enabled:
+            try:
+                return self.cloudinary.expected_url(f"{photo_id}_layout", ext="png")
+            except CloudinaryError:
+                pass
         assets = self.guest_assets(photo_id)
         if not assets:
             return None
@@ -501,26 +506,24 @@ class PhotoboothService:
             else None
         )
         has_layout = layout_local is not None and layout_local.exists()
-        if photo_local is None and not has_layout:
+
+        cloud_photo: str | None = None
+        cloud_layout: str | None = None
+        if self.cloudinary and self.cloudinary.enabled:
+            try:
+                cloud_photo = self.cloudinary.expected_url(f"{photo_id}_photo", ext="jpg")
+                cloud_layout = self.cloudinary.expected_url(f"{photo_id}_layout", ext="png")
+            except CloudinaryError:
+                pass
+
+        if photo_local is None and not has_layout and not cloud_layout:
             return None
 
         local_photo_url = f"/photos/{photo_id}.jpg"
         local_layout_url = f"/prints/{photo_id}_layout.png"
 
-        photo_url = local_photo_url
-        layout_url = local_layout_url if has_layout else None
-        cloud_photo: str | None = None
-        cloud_layout: str | None = None
-
-        if self.cloudinary and self.cloudinary.enabled:
-            try:
-                cloud_photo = self.cloudinary.expected_url(f"{photo_id}_photo", ext="jpg")
-                cloud_layout = self.cloudinary.expected_url(f"{photo_id}_layout", ext="png")
-                photo_url = cloud_photo
-                if has_layout:
-                    layout_url = cloud_layout
-            except CloudinaryError:
-                pass
+        photo_url = cloud_photo or (local_photo_url if photo_local else None)
+        layout_url = cloud_layout or (local_layout_url if has_layout else None)
 
         return {
             "photo_id": photo_id,
@@ -529,7 +532,7 @@ class PhotoboothService:
             "photo_url_local": local_photo_url if photo_local else None,
             "layout_url_local": local_layout_url if has_layout else None,
             "cloudinary_photo_url": cloud_photo,
-            "cloudinary_layout_url": cloud_layout if has_layout else None,
+            "cloudinary_layout_url": cloud_layout,
         }
 
     def _fallback_qr(self, request_base: str, photo_id: str) -> str:

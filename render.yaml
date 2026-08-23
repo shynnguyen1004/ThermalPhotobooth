@@ -1,0 +1,33 @@
+# Render Blueprint — guest redirect + SPA (no camera/printer on cloud)
+services:
+  - type: web
+    name: thermal-photobooth
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && cd frontend && npm ci && npm run build
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+      - key: HOST
+        value: "0.0.0.0"
+      - key: CAMERA_BACKEND
+        value: webcam
+      - key: PRINTER_BACKEND
+        value: file
+      - key: PUBLIC_BASE_URL
+        value: https://thermal-photobooth.onrender.com
+      - key: QR_BASE_URL
+        value: https://thermal-photobooth.onrender.com/photo/{id}
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: CLOUDINARY_FOLDER
+        value: bkfire-thermalphotobooth
+      - key: REGISTER_QR_URL
+        sync: false
+      - key: ORG_NAME
+        value: BK FIRE

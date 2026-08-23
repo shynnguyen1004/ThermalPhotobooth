@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -14,7 +15,11 @@ if str(ROOT) not in sys.path:
 
 import uvicorn
 
+from app.presentation.api import create_app
 from config.settings import settings
+
+# ASGI app for Render / `uvicorn main:app --host 0.0.0.0 --port $PORT`
+app = create_app()
 
 
 def main() -> None:
@@ -23,11 +28,11 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     settings.ensure_dirs()
+    port = int(os.environ.get("PORT", settings.port))
     uvicorn.run(
-        "app.presentation.api:create_app",
-        factory=True,
+        app,
         host=settings.host,
-        port=settings.port,
+        port=port,
         reload=False,
     )
 
