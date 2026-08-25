@@ -1,36 +1,66 @@
-# BK FIRE Thermal Photobooth
+# Thermal Photobooth
 
-Event photobooth for **HCMUT Club Day** on macOS.
+macOS photobooth automation for events: **Sony USB tether** (or webcam fallback) → dithered film-strip layout → **POS58 thermal print** + download / register QR.
 
-Capture with a **Sony USB camera** (or MacBook webcam fallback), render a **58mm thermal strip**, print on a **POS58**, and let guests download via QR.
+| Stack | Role |
+|-------|------|
+| **React + Vite + TypeScript** | Kiosk UI + guest download page |
+| **FastAPI (Python)** | Capture, layout, print, Cloudinary upload |
+| **gphoto2 / ffmpeg** | Sony tether + webcam |
 
-
-| Stack                         | Role                                      |
-| ----------------------------- | ----------------------------------------- |
-| **React + Vite + TypeScript** | Kiosk UI + guest download page            |
-| **FastAPI (Python)**          | Capture, layout, print, Cloudinary upload |
-| **gphoto2 / ffmpeg**          | Sony tether + webcam                      |
-
-
-Each session takes **one portrait (3:4)**, composites it onto a fixed film-strip template with two QR codes, dithered for thermal ink.
+Each session captures **one portrait (3:4)**, composites it onto a branded template with QR codes, and dithers the strip for 1-bit thermal ink.
 
 ---
 
 ## Product demo
 
-Real booth output from HCMUT Club Day — POS58 thermal strips with film frame, dither, and dual QR codes:
+### TNE Commencement Day 2026
+
+<!-- Drop your event photos here:
+  docs/demo/tne-product.jpg   — printed strips / product shot
+  docs/demo/tne-guests.jpg    — guests holding freshly printed photostrips
+-->
 
 <p align="center">
-  <img src="docs/demo/Demo1.JPG" alt="Thermal photo strips fanned on the booth table" width="48%" />
+  <!-- <img src="docs/demo/tne-product.jpg" alt="TNE Commencement Day — thermal photostrips" width="48%" /> -->
   &nbsp;
-  <img src="docs/demo/Demo2.JPG" alt="Guests holding freshly printed BK FIRE photostrips" width="48%" />
+  <!-- <img src="docs/demo/tne-guests.jpg" alt="TNE Commencement Day — guests holding freshly printed photostrips" width="48%" /> -->
 </p>
 
-<p align="center"><em>Left: printed strips on the booth table · Right: guests with fresh prints at Club Day</em></p>
+<p align="center"><em>Left: product · Right: guests holding freshly printed photostrips — <strong>coming soon</strong></em></p>
+
+### BK Fire · HCMUT Club Day 2026
+
+<p align="center">
+  <img src="docs/demo/Demo1.JPG" alt="BK Fire Club Day — thermal photo strips on the booth table" width="48%" />
+  &nbsp;
+  <img src="docs/demo/Demo2.JPG" alt="BK Fire Club Day — guests holding freshly printed photostrips" width="48%" />
+</p>
+
+<p align="center"><em>Left: printed strips on the booth table · Right: guests holding freshly printed photostrips</em></p>
 
 ---
 
+## Interface
 
+<!-- Drop UI screenshots here:
+  docs/demo/ui-kiosk.png   — landscape kiosk web UI
+  docs/demo/ui-guest.png   — portrait phone screenshot of the guest download page
+-->
+
+<p align="center">
+  <!-- <img src="docs/demo/ui-kiosk.png" alt="Kiosk web interface (landscape)" width="72%" /> -->
+</p>
+
+<p align="center"><em>Kiosk web UI (landscape) — <strong>coming soon</strong></em></p>
+
+<p align="center">
+  <!-- <img src="docs/demo/ui-guest.png" alt="Guest download page on phone (portrait)" width="28%" /> -->
+</p>
+
+<p align="center"><em>Guest page after scanning the download QR (portrait phone) — <strong>coming soon</strong></em></p>
+
+---
 
 ## Workflow
 
@@ -50,58 +80,44 @@ flowchart LR
     G --> H[Floyd / Comic dither]
     H --> I[Embed download + register QR]
     I --> J[POS58 print]
-    I --> K[Upload strip to Cloudinary]
+    I --> K[Upload to Cloudinary]
   end
 
   subgraph Guest["Guest phone"]
     K --> L[Scan download QR]
-    L --> M["/photo/{id} or Cloudinary PNG"]
+    L --> M["/photo/{id} or Cloudinary"]
   end
 ```
-
-
 
 **Operator loop**
 
 1. Open the React kiosk at `http://127.0.0.1:8000` (production build) or Vite at `:5173` (dev).
-2. Check camera / printer status dots in the top bar.
+2. Check camera / printer status in the top bar.
 3. Pick dither style (`floyd` or `comic`), then **Capture by Camera** or **Capture by Webcam**.
-4. The backend shoots one frame → builds the 384×955 strip → prints → uploads.
+4. Backend shoots one frame → builds the thermal strip → prints → uploads.
 5. Guest scans **SCAN TO DOWNLOAD**; optional **SCAN TO REGISTER** uses `REGISTER_QR_URL`.
 
 ---
 
-
-
 ## Requirements
-
-
 
 ### Hardware
 
-
-| Device                            | Notes                                           |
-| --------------------------------- | ----------------------------------------------- |
-| Mac (Intel / Apple Silicon)       | macOS 12+ recommended                           |
-| Sony (A7S II or any gphoto2 body) | **Data** USB cable — not charge-only            |
-| *or* MacBook FaceTime camera      | Automatic fallback when Sony is absent          |
-| Generic POS58 thermal printer     | 58mm roll, printable width **384 px @ 203 DPI** |
-
-
-
+| Device | Notes |
+|--------|--------|
+| Mac (Intel / Apple Silicon) | macOS 12+ recommended |
+| Sony (A7S II or any gphoto2 body) | **Data** USB cable — not charge-only |
+| *or* MacBook FaceTime camera | Automatic fallback when Sony is absent |
+| Generic POS58 thermal printer | 58mm roll, printable width **384 px @ 203 DPI** |
 
 ### Software
 
-
-| Tool     | Version (typical)    |
-| -------- | -------------------- |
-| Homebrew | latest               |
-| Python   | 3.9+                 |
-| Node.js  | 18+ (20/22 LTS fine) |
-| npm      | 9+                   |
-
-
-
+| Tool | Version (typical) |
+|------|-------------------|
+| Homebrew | latest |
+| Python | 3.9+ |
+| Node.js | 18+ (20/22 LTS fine) |
+| npm | 9+ |
 
 ### Sony body checklist
 
@@ -116,20 +132,14 @@ gphoto2 --auto-detect
 
 ---
 
-
-
 ## Full setup
-
-
 
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/shynnguyen1004/BKFire-ThermalPhotobooth.git
-cd BKFire-ThermalPhotobooth
+git clone https://github.com/shynnguyen1004/ThermalPhotobooth.git
+cd ThermalPhotobooth
 ```
-
-
 
 ### 2. System packages (Homebrew)
 
@@ -145,8 +155,6 @@ killall -9 PTPCamera
 gphoto2 --auto-detect
 gphoto2 --capture-image-and-download
 ```
-
-
 
 ### 3. Python backend
 
@@ -189,16 +197,19 @@ cp .env.example .env
 Edit `.env`:
 
 ```env
-ORG_NAME=BK FIRE
+ORG_NAME=University of Technology Sydney
 
-# Cloudinary — upload the full print strip (PNG); download QR points here
+# Cloudinary — color photo + layout strip for guest download
 CLOUDINARY_CLOUD_NAME=your_cloud
 CLOUDINARY_API_KEY=xxxx
 CLOUDINARY_API_SECRET=yyyy
-CLOUDINARY_FOLDER=bkfire-thermalphotobooth
+CLOUDINARY_FOLDER=thermal-photobooth
+
+# Optional public guest base (e.g. Render deploy)
+PUBLIC_BASE_URL=https://your-app.onrender.com
 
 # Fallback QR when Cloudinary is not configured ({id} = photo id)
-QR_BASE_URL=https://my-photobooth.app/photo/{id}
+QR_BASE_URL=https://your-app.onrender.com/photo/{id}
 
 # Fixed “scan to register” QR
 REGISTER_QR_URL=https://forms.gle/your-form
@@ -217,34 +228,38 @@ HOST=0.0.0.0
 PORT=8000
 ```
 
-
-| Variable            | Meaning                                                                 |
-| ------------------- | ----------------------------------------------------------------------- |
-| `CAMERA_BACKEND`    | `auto` (Sony → webcam), `gphoto`, or `webcam`                           |
-| `PRINTER_BACKEND`   | `cups` (recommended on macOS), `usb`, or `file` (raster only, no print) |
-| `QR_BASE_URL`       | Local/guest page fallback when Cloudinary is off                        |
-| `REGISTER_QR_URL`   | Right-side QR on the strip                                              |
-| `REMOVE_BACKGROUND` | `true` to cut out subject before dither (needs `rembg`)                 |
-
-
-
+| Variable | Meaning |
+|----------|---------|
+| `CAMERA_BACKEND` | `auto` (Sony → webcam), `gphoto`, or `webcam` |
+| `PRINTER_BACKEND` | `cups` (recommended on macOS), `usb`, or `file` (raster only, no print) |
+| `QR_BASE_URL` | Guest page fallback when Cloudinary is off |
+| `REGISTER_QR_URL` | Right-side QR on the strip |
+| `REMOVE_BACKGROUND` | `true` to cut out subject before dither (needs `rembg`) |
+| `ORG_NAME` | Branding label shown in the UI |
 
 ### 6. Print assets
 
+Swap templates per event (same sizes). Defaults for the current build:
+
 ```
-assets/print_template.png   # 384×955 — logos + fixed text + QR frames
-assets/frame_border.png     # film-strip overlay on the photo box
+assets/uts_print_layout_template.png    # B&W thermal strip template
+assets/uts_upload_layout_template.png   # color layout for Cloudinary / guest download
+assets/uts_frame_border.png             # film-strip overlay on the photo box
 ```
 
-The renderer pastes **one 3:4 photo**, the **download QR**, and the **register QR**. Replace the PNGs at the same size to rebrand.
+Override via `.env` if needed:
+
+```env
+# FRAME_BORDER_PATH=assets/uts_frame_border.png
+# PRINT_TEMPLATE_PATH=assets/uts_print_layout_template.png
+# PRINT_TEMPLATE_COLORED_PATH=assets/uts_upload_layout_template.png
+```
+
+The renderer pastes **one 3:4 photo**, the **download QR**, and the **register QR**. Replace the PNGs (or point env vars at new files) to rebrand for another event.
 
 ---
 
-
-
 ## Run
-
-
 
 ### Production-style (single process)
 
@@ -287,8 +302,6 @@ Set `PRINTER_BACKEND=file` to write strips under `data/prints/` without sending 
 
 ---
 
-
-
 ## Using the kiosk
 
 1. Confirm **Camera** / **Webcam** / **Printer** status indicators.
@@ -297,16 +310,12 @@ Set `PRINTER_BACKEND=file` to write strips under `data/prints/` without sending 
 4. Wait for the result drawer — preview strip, reprint with copy count if needed.
 5. Guest scans the left QR to download; right QR opens the register link.
 
-
-| Camera         | Result                                                |
-| -------------- | ----------------------------------------------------- |
-| Sony USB       | 1× portrait 3:4 → centered film frame → thermal print |
-| MacBook webcam | Same layout                                           |
-
+| Camera | Result |
+|--------|--------|
+| Sony USB | 1× portrait 3:4 → film frame → thermal print |
+| MacBook webcam | Same layout |
 
 ---
-
-
 
 ## Project layout
 
@@ -328,8 +337,8 @@ Set `PRINTER_BACKEND=file` to write strips under `data/prints/` without sending 
 │   │   ├── hooks/                 # status, clock, live preview
 │   │   └── api/client.ts
 │   └── dist/                      # production build (served by FastAPI)
-├── assets/                        # print template + film frame
-├── docs/demo/                     # README sample prints
+├── assets/                        # print / upload templates + frame overlays
+├── docs/demo/                     # README event photos & UI screenshots
 ├── data/{temp,prints,photos}/
 ├── scripts/
 └── requirements.txt
@@ -337,35 +346,29 @@ Set `PRINTER_BACKEND=file` to write strips under `data/prints/` without sending 
 
 ---
 
-
-
 ## API (backend)
 
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | React SPA (if built) or legacy Jinja UI |
+| `GET` | `/api/config` | Org name, Cloudinary flags |
+| `GET` | `/api/status` | Camera(s), printer, Cloudinary, last print |
+| `POST` | `/api/capture-print` | Form: `source`, `dither_style`, optional `faculty` |
+| `POST` | `/api/reprint-last` | Form: `dither_style`, `copies` |
+| `GET` | `/photo/{id}` | Guest download route (SPA) |
+| `GET` | `/photos/{id}.jpg` | Archived JPEG |
+| `GET` | `/prints/{id}_print.png` | Dithered strip |
 
-| Method | Path                     | Description                                        |
-| ------ | ------------------------ | -------------------------------------------------- |
-| `GET`  | `/`                      | React SPA (if built) or legacy Jinja UI            |
-| `GET`  | `/api/config`            | Org name, Cloudinary flags                         |
-| `GET`  | `/api/status`            | Camera(s), printer, Cloudinary, last print         |
-| `POST` | `/api/capture-print`     | Form: `source`, `dither_style`, optional `faculty` |
-| `POST` | `/api/reprint-last`      | Form: `dither_style`, `copies`                     |
-| `GET`  | `/photo/{id}`            | Guest download route (SPA)                         |
-| `GET`  | `/photos/{id}.jpg`       | Archived JPEG                                      |
-| `GET`  | `/prints/{id}_print.png` | Dithered strip                                     |
-
-
-`source`: `auto`  `gphoto`  `webcam` · `dither_style`: `floyd`  `comic`
+`source`: `auto` \| `gphoto` \| `webcam` · `dither_style`: `floyd` \| `comic`
 
 ---
 
-
-
 ## Troubleshooting
 
-`Could not claim the USB device` **/ camera busy**  
+**`Could not claim the USB device` / camera busy**  
 → `killall -9 PTPCamera`, close Photos / Image Capture / Imaging Edge.
 
-**Sony missing from** `gphoto2 --auto-detect`  
+**Sony missing from `gphoto2 --auto-detect`**  
 → USB Connection = PC Remote, use a data cable, disable Wi‑Fi transfer on the body.
 
 **Kiosk shows blank / old HTML after UI changes**  
@@ -374,22 +377,22 @@ Set `PRINTER_BACKEND=file` to write strips under `data/prints/` without sending 
 **Vite can’t reach the API**  
 → Keep `python main.py` on port 8000; Vite proxies `/api`, `/photos`, `/prints` (see `frontend/vite.config.ts`).
 
-**Printer USB** `Access denied`  
+**Printer USB `Access denied`**  
 → `PRINTER_BACKEND=cups`, add POS58 in **System Settings → Printers**, match `PRINTER_CUPS_NAME`.
 
 **Print looks gray / muddy**  
 → Photos are dithered for 1-bit thermal. Raise density; avoid CUPS re-scaling (prefer `usb` when it works).
 
-**Sony also drops** `.ARW` **files**  
+**Sony also drops `.ARW` files**  
 → Switch Image Quality to Fine/Standard; the app still keeps JPEG only.
 
-`Chưa cài cloudinary`  
+**`Chưa cài cloudinary`**  
 → `pip install cloudinary` and fill Cloudinary keys in `.env`.
 
 ---
 
-
-
 ## License
 
-Internal use — BK FIRE Club Day.
+Internal event use.
+
+Made for **TNE Commencement Day 2026** and **BK Fire HCMUT Club Day 2026**.
