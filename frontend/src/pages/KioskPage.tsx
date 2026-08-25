@@ -242,6 +242,19 @@ export function KioskPage() {
               </span>
             </button>
           </div>
+
+          <p className="control-panel__credit">
+            Developed by{' '}
+            <a
+              href="https://shynnguyen.vercel.app"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              @shyn._.nguyen
+            </a>
+            <br />
+            Made for TNE Commencement Day 2026
+          </p>
         </aside>
 
         <div className="stage-center">

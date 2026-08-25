@@ -43,22 +43,13 @@ Each session captures **one portrait (3:4)**, composites it onto a branded templ
 
 ## Interface
 
-<!-- Drop UI screenshots here:
-  docs/demo/ui-kiosk.png   — landscape kiosk web UI
-  docs/demo/ui-guest.png   — portrait phone screenshot of the guest download page
--->
-
 <p align="center">
-  <!-- <img src="docs/demo/ui-kiosk.png" alt="Kiosk web interface (landscape)" width="72%" /> -->
+  <img src="docs/demo/ui-kiosk.png" alt="Kiosk web interface (landscape)" width="68%" />
+  &nbsp;
+  <img src="docs/demo/ui-guest.png" alt="Guest download page on phone (portrait)" width="20%" />
 </p>
 
-<p align="center"><em>Kiosk web UI (landscape) — <strong>coming soon</strong></em></p>
-
-<p align="center">
-  <!-- <img src="docs/demo/ui-guest.png" alt="Guest download page on phone (portrait)" width="28%" /> -->
-</p>
-
-<p align="center"><em>Guest page after scanning the download QR (portrait phone) — <strong>coming soon</strong></em></p>
+<p align="center"><em>Left: kiosk web UI (landscape) · Right: guest page after scanning the download QR (portrait phone)</em></p>
 
 ---
 
