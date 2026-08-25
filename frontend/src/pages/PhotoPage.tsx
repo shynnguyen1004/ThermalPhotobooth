@@ -5,12 +5,12 @@ import type { GuestPhotoAssets } from '../types'
 
 export function PhotoPage() {
   const { photoId = '' } = useParams()
-  const [orgName, setOrgName] = useState('BK FIRE')
+  const [orgName, setOrgName] = useState('University of Technology Sydney')
   const [assets, setAssets] = useState<GuestPhotoAssets | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    document.title = `Ảnh của bạn — ${orgName}`
+    document.title = `Your photo — ${orgName}`
   }, [orgName])
 
   useEffect(() => {
@@ -24,7 +24,7 @@ export function PhotoPage() {
     void fetchPhotoAssets(photoId)
       .then(setAssets)
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : 'Không tải được ảnh')
+        setError(err instanceof Error ? err.message : 'Could not load photo')
       })
   }, [photoId])
 
@@ -33,40 +33,37 @@ export function PhotoPage() {
 
   return (
     <main className="guest-card">
-      <div className="guest-logos">
-        <img src="/img/logo-bachkhoa.png" alt="BK TP.HCM" width={48} height={48} />
-        <img src="/img/logo-bkfire.png" alt="BK FIRE" width={48} height={48} />
-      </div>
-      <span className="event-pill">📸 Photobooth · Club Day 2026</span>
-      <h1>Ảnh Club Day của bạn</h1>
-      <p className="muted">Mã: {photoId}</p>
+      <img
+        className="guest-lockup"
+        src="/img/uts/lockup-full.png"
+        alt="UTS and HCMUT"
+      />
+      <span className="event-pill">Photobooth</span>
+      <h1>Your photo</h1>
+      <p className="muted">ID: {photoId}</p>
 
       {error && <p className="guest-error">{error}</p>}
 
       {!error && (
         <>
           <section className="guest-section">
-            <h2 className="guest-section__title">Ảnh màu</h2>
-            <img className="guest-photo" src={photoUrl} alt="Ảnh photobooth màu" />
-            <a
-              className="cta cta--compact"
-              href={photoUrl}
-              download={`bkfire-${photoId}.jpg`}
-            >
-              Tải ảnh màu
+            <h2 className="guest-section__title">Color photo</h2>
+            <img className="guest-photo" src={photoUrl} alt="Color photobooth photo" />
+            <a className="cta cta--compact" href={photoUrl} download={`uts-${photoId}.jpg`}>
+              Download color photo
             </a>
           </section>
 
           {assets?.layout_url !== null && (
             <section className="guest-section">
-              <h2 className="guest-section__title">Layout in</h2>
+              <h2 className="guest-section__title">Print layout</h2>
               <img className="guest-layout" src={layoutUrl} alt="Layout photobooth" />
               <a
                 className="cta cta--compact cta--outline"
                 href={layoutUrl}
-                download={`bkfire-${photoId}-layout.png`}
+                download={`uts-${photoId}-layout.png`}
               >
-                Tải layout in
+                Download print layout
               </a>
             </section>
           )}

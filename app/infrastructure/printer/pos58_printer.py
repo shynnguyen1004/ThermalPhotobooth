@@ -14,31 +14,20 @@ logger = logging.getLogger(__name__)
 
 Backend = Literal["usb", "cups", "file"]
 
-# Máy clone POS58: buffer nhỏ, gần như không có flow-control.
-# Đẩy GS v 0 nhanh hơn tốc độ in → rơi byte → lệch sync → in “mã rác”
-# (phần raster bị hiểu nhầm thành text) xen giữa các dải ảnh.
-#
-# Chiến lược: chia dải nhỏ + nhịp theo thời gian in thật của dải
-# (≈ bằng thời gian đầu nhiệt in xong dải) → không tràn buffer mà
-# cũng không nghỉ lâu đến mức tạo sọc trắng như delay cũ.
-BAND_ROWS = 24          # 24×48 byte ≈ 1.15 KB / lệnh — an toàn hơn 48
-# 203 DPI → 24 hàng ≈ 3.0 mm. POS58 ~70–90 mm/s → ~0.04–0.05 s/dải.
-BAND_PACE_SEC = 0.045
-# Nghỉ sau mỗi job (cut xong) trước khi job/copy kế — buffer + cơ cắt kịp.
-JOB_SETTLE_SEC = 0.45
-USB_WRITE_CHUNK = 4096
+# Gửi CẢ strip trong 1 lệnh GS v 0; ghi USB theo chunk 512 byte (ổn định hơn full dump).
+USB_WRITE_CHUNK = 512
+JOB_SETTLE_SEC = 0.55
 
-# ESC 7 — heat (n2 càng cao càng đen).
+# ESC 7 — heat (n2 càng cao càng đen; n3 cao hơn → đầu nhiệt kịp nguội, ít ghost dọc).
 HEAT_DOTS = 7
-HEAT_TIME = 80
-HEAT_INTERVAL = 2
+HEAT_TIME = 70
+HEAT_INTERVAL = 4
 
-# Dòng ngang “mồi” trước layout — giúp sync raster, giảm wrap logo header.
+# Dòng ngang “mồi” trước layout — giúp sync raster, giảm wrap logo đầu phiếu.
 LEADER_LINE_PX = 4
-LEADER_PAD_PX = 2          # trắng trên/dưới line
+LEADER_PAD_PX = 2
 PRINT_WIDTH_PX = 384
 
-# Dòng credit — font chữ máy in (ESC/POS text), không dither vào ảnh.
 CREDIT_LINE = "developed by @shyn._.nguyen"
 
 
@@ -66,12 +55,21 @@ class POS58Printer:
         cups_name: str = "POS58",
         backend: Backend = "usb",
         dry_run_dir: Optional[Path] = None,
+        band_pace_sec: float = 0.0,
+        heat_dots: int = HEAT_DOTS,
+        heat_time: int = HEAT_TIME,
+        heat_interval: int = HEAT_INTERVAL,
     ) -> None:
         self.vendor_id = vendor_id
         self.product_id = product_id
         self.cups_name = cups_name
         self.backend: Backend = backend  # type: ignore[assignment]
         self.dry_run_dir = dry_run_dir
+        # Giữ param settings cũ — hiện không dùng để chia chunk (in thử full-speed).
+        self.usb_chunk_delay_sec = max(0.0, float(band_pace_sec))
+        self.heat_dots = max(1, min(11, int(heat_dots)))
+        self.heat_time = max(1, min(255, int(heat_time)))
+        self.heat_interval = max(0, min(255, int(heat_interval)))
 
     def check_connection(self) -> dict:
         if self.backend == "file":
@@ -113,7 +111,6 @@ class POS58Printer:
         """Print 1-bit strip (comic-dot / threshold đã xử lý ở layout)."""
         del download_url, register_url  # QR đã nằm trong raster template
         img = self._as_image(image)
-        # Không Floyd lại — giữ comic-dot / floyd từ LayoutRenderer.
         if img.mode != "1":
             img = img.convert("L").convert("1", dither=Image.Dither.NONE)
 
@@ -125,7 +122,6 @@ class POS58Printer:
             )
             img = img.convert("1", dither=Image.Dither.NONE)
 
-        # Đảm bảo width chia hết 8 (GS v 0 yêu cầu width_bytes nguyên).
         if img.width % 8 != 0:
             pad = 8 - (img.width % 8)
             canvas = Image.new("1", (img.width + pad, img.height), 1)
@@ -151,7 +147,7 @@ class POS58Printer:
             raise PrinterError("python-escpos chưa được cài.") from exc
 
         class _UsbNoReset(Usb):
-            """POS58 clone trên macOS: bỏ ``device.reset()``; ghi USB đủ + đều nhịp."""
+            """POS58 clone trên macOS: bỏ ``device.reset()``; ghi USB theo chunk 512B."""
 
             def _configure_usb(self) -> None:
                 if not self.device:
@@ -167,6 +163,7 @@ class POS58Printer:
                         logger.debug("USB clear_halt(0x%02x): %s", ep, exc)
 
             def _raw(self, msg: bytes) -> None:
+                """Ghi theo chunk 512 byte — không sleep giữa chunk."""
                 assert self.device
                 view = memoryview(msg)
                 sent = 0
@@ -191,37 +188,47 @@ class POS58Printer:
             ) from exc
 
         try:
-            # Init sạch — quan trọng khi in liên tiếp (buffer còn sót từ job trước).
             printer._raw(b"\x1b\x40")  # ESC @
             time.sleep(0.05)
-            printer._raw(bytes([0x1B, 0x37, HEAT_DOTS, HEAT_TIME, HEAT_INTERVAL]))  # ESC 7
-            printer._raw(b"\x1b\x61\x00")  # ESC a 0 — left
+            printer._raw(
+                bytes(
+                    [
+                        0x1B,
+                        0x37,
+                        self.heat_dots,
+                        self.heat_time,
+                        self.heat_interval,
+                    ]
+                )
+            )
+            printer._raw(b"\x1b\x61\x00")  # left
 
-            # Line ngang full-width trước layout — mồi sync, tránh wrap logo đầu phiếu.
             leader = self._leader_line_image(img.width)
-            self._usb_send_band(printer, leader, EscposImage, GS)
-            time.sleep(BAND_PACE_SEC)
+            self._usb_send_raster(printer, leader, EscposImage, GS)
 
-            for top in range(0, img.height, BAND_ROWS):
-                bottom = min(top + BAND_ROWS, img.height)
-                band = img.crop((0, top, img.width, bottom))
-                self._usb_send_band(printer, band, EscposImage, GS)
-                # Nhịp ≈ thời gian in dải — giữ đầu nhiệt chạy liên tục, tránh tràn buffer.
-                rows = bottom - top
-                pace = BAND_PACE_SEC * (rows / BAND_ROWS)
-                if pace > 0:
-                    time.sleep(pace)
+            # CẢ layout 1 lệnh GS v 0 — USB ghi theo chunk 512B
+            self._usb_send_raster(printer, img, EscposImage, GS)
 
-            # Chỉ credit dùng font máy in; chữ QR nằm trong template.
             printer._raw(b"\x1b\x61\x01")  # center
-            printer.text(f"\n{CREDIT_LINE}\n\n")
+            printer.text(f"\n{CREDIT_LINE}\n")
+            printer._raw(b"\x1b\x61\x00")
+            trailer = self._leader_line_image(img.width)
+            self._usb_send_raster(printer, trailer, EscposImage, GS)
+            printer.text("\n")
             try:
                 printer.cut(mode="PART")
             except Exception:  # noqa: BLE001
                 printer.cut()
-            # Cho cơ cắt + buffer kịp trước job kế (copies / in liên tiếp).
             time.sleep(JOB_SETTLE_SEC)
-            logger.info("Printed via USB ESC/POS")
+            logger.info(
+                "Printed via USB ESC/POS (full raster %sx%s, chunk=%dB, heat=%d/%d/%d)",
+                img.width,
+                img.height,
+                USB_WRITE_CHUNK,
+                self.heat_dots,
+                self.heat_time,
+                self.heat_interval,
+            )
         except Exception as exc:  # noqa: BLE001
             raise PrinterError(f"Lỗi khi in ESC/POS: {exc}") from exc
         finally:
@@ -236,13 +243,12 @@ class POS58Printer:
         height = LEADER_PAD_PX + LEADER_LINE_PX + LEADER_PAD_PX
         img = Image.new("1", (width, height), 1)
         y0 = LEADER_PAD_PX
-        y1 = y0 + LEADER_LINE_PX
         black = Image.new("1", (width, LEADER_LINE_PX), 0)
         img.paste(black, (0, y0))
         return img
 
     @staticmethod
-    def _usb_send_band(printer, band: Image.Image, escpos_image_cls, gs) -> None:
+    def _usb_send_raster(printer, band: Image.Image, escpos_image_cls, gs) -> None:
         esc_im = escpos_image_cls(band.convert("1"))
         if esc_im.width_bytes * 8 != band.width:
             raise PrinterError(

@@ -1,9 +1,12 @@
-"""Template-based thermal layout renderer — POS58 384 px strip.
+"""UTS thermal + Cloudinary layout renderer.
 
-The print design (``assets/print_template.png``, 384x955 @ 203 DPI) carries
-fixed branding, film-area chrome, and QR captions (no QR placeholders).
-Rendering pastes the dithered photo (+ ``frame_border`` overlay) and two
-live QR codes into measured boxes, then converts to 1-bit for ESC/POS.
+Three assets drive the pipeline:
+
+1. ``assets/uts_frame_border.png`` — RGBA film-strip overlay on the photo.
+2. ``assets/uts_upload_layout_template.png`` — color strip (photo + frame) uploaded
+   to Cloudinary for guest download.
+3. ``assets/uts_print_layout_template.png`` — B&W strip for POS58: dithered photo
+   + frame + QR pointing at the Cloudinary color layout URL.
 """
 
 from __future__ import annotations
@@ -21,39 +24,37 @@ logger = logging.getLogger(__name__)
 
 DitherStyle = Literal["comic", "floyd"]
 
-# Geometry — template từ Frame 1.png scaled → 384×955 (không còn placeholder QR)
-TEMPLATE_SIZE = (384, 955)
-PHOTO_BOX = (0, 89, 381, 506)          # x, y, w, h — vùng film strip (frame_border overlay)
-# QR nằm giữa chữ tiêu đề (≤788) và SCAN TO (≥935); căn theo tâm mỗi cột chữ
-QR_DOWNLOAD_BOX = (21, 801, 122, 122)   # left — SCAN TO DOWNLOAD
-QR_REGISTER_BOX = (244, 801, 122, 122)  # right — SCAN TO REGISTER
-QR_QUIET_PX = 2                         # quiet zone trong ô
-QR_MIN_MODULE_PX = 3                    # dưới ~0.37 mm/module điện thoại khó quét trên giấy nhiệt
-# Cả 2 QR cùng cạnh — fill ô trừ quiet zone (0.85 × 1.15 ≈ +15% so với trước).
-QR_SIZE_RATIO = 0.85 * 1.15
+# Native template sizes (printer scales print strip → 384 px at send time)
+PRINT_SIZE = (409, 1067)
+UPLOAD_SIZE = (439, 806)
+
+# Photo / frame placement — frame asset is 409×546
+PRINT_PHOTO_BOX = (0, 90, 409, 546)       # x, y, w, h on print template
+UPLOAD_PHOTO_BOX = (15, 103, 409, 546)    # centered on wider upload canvas
+
+# Single QR — SCAN TO DOWNLOAD (white band ~848–1028); +10% vs 157
+QR_DOWNLOAD_BOX = (118, 852, 173, 173)
+QR_QUIET_PX = 2
+QR_MIN_MODULE_PX = 3
+QR_SIZE_RATIO = 0.92
 QR_RENDER_SIZE = int(
     round((min(QR_DOWNLOAD_BOX[2], QR_DOWNLOAD_BOX[3]) - 2 * QR_QUIET_PX) * QR_SIZE_RATIO)
 )
-TEXT_THRESHOLD = 160                  # template AA edges darker than this go solid black
-DOWNLOAD_SCALE = 3                    # color photo (upload/download) resolution multiplier
 
-# Comic-dot (circular halftone) — tuned for POS58 203 DPI / ~381 px photo width.
-# Ưu tiên midtone (da): nâng vùng da + chịu cháy highlight (áo trắng).
-HALFTONE_CELL = 5                     # ≈ 0.62 mm/cell
+DOWNLOAD_SCALE = 3
+
+# Comic-dot (circular halftone) — tuned for ~409 px photo width @ 203 DPI.
+HALFTONE_CELL = 5
 HALFTONE_SHARPEN = 1.2
-# Gamma < 1 → nâng shadow/midtone (skin). Highlight bị nén riêng bên dưới.
 SKIN_LIFT_GAMMA = 0.80
-# Sau lift: nhân luminance (0.85 ≈ đậm thêm ~15% trên giấy)
 SKIN_DENSITY = 0.90
-# Từ mức này trở lên đẩy nhanh về trắng (áo/sáng cháy nhẹ)
-HIGHLIGHT_START = 0.55                # 0–1 sau lift
-HIGHLIGHT_PUSH = 1.5                  # càng cao → highlight càng cháy
-# Tone → độ đậm chấm: >1 làm midtone ít đen hơn (giữ chi tiết da)
+HIGHLIGHT_START = 0.55
+HIGHLIGHT_PUSH = 1.5
 DOT_COVERAGE_GAMMA = 1.0
 
 
 class LayoutRenderer:
-    """Paste one photo and the QR codes into the fixed print template."""
+    """Compose UTS upload (color) and print (1-bit) strips from one capture."""
 
     def __init__(
         self,
@@ -66,7 +67,7 @@ class LayoutRenderer:
         frame_border_path: Optional[Path] = None,
         template_colored_path: Optional[Path] = None,
     ) -> None:
-        self.register_qr_url = register_qr_url
+        self.register_qr_url = register_qr_url  # kept for API compat; UTS print has no register QR
         self.output_dir = output_dir
         self.portrait_aspect_w = portrait_aspect_w
         self.portrait_aspect_h = portrait_aspect_h
@@ -74,11 +75,13 @@ class LayoutRenderer:
         self.dither_style: DitherStyle = "floyd"
         if self.output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True)
+
         template_path = Path(template_path)
         colored_path = Path(template_colored_path) if template_colored_path else template_path
-        self._template = self._load_template(template_path)
-        self._template_rgb = self._load_template_rgb(template_path)
-        self._template_colored_rgb = self._load_template_colored(colored_path)
+        self._template = self._load_template(template_path, expected=PRINT_SIZE, label="print")
+        self._template_colored_rgb = self._load_template_colored(
+            colored_path, expected=UPLOAD_SIZE, label="upload"
+        )
         self._frame = self._load_frame(Path(frame_border_path) if frame_border_path else None)
         self._frame_resized: dict[tuple[int, int], Image.Image] = {}
 
@@ -90,32 +93,25 @@ class LayoutRenderer:
         save: bool = True,
         dither_style: Optional[DitherStyle] = None,
     ) -> Image.Image:
-        """Compose template + photo + QR codes into the final 1-bit strip."""
+        """Compose B&W print template + dithered photo + frame + download QR."""
         style: DitherStyle = dither_style or self.dither_style
         if style not in ("comic", "floyd"):
             style = "floyd"
         paths = self._normalize_paths(photo_paths)
         canvas = self._template.copy()
+        x, y, w, h = PRINT_PHOTO_BOX
 
         photo = paths[0] if paths else None
-        photo_block = self._photo_block(photo, (PHOTO_BOX[2], PHOTO_BOX[3]), as_gray=True)
+        photo_block = self._photo_block(photo, (w, h), as_gray=True)
         if style == "floyd":
             photo_block = photo_block.convert("1", dither=Image.Dither.FLOYDSTEINBERG).convert("L")
         else:
             photo_block = self._comic_dot(photo_block)
-        # Overlay after dither so sprockets / "37" / logo stay solid 1-bit.
         photo_block = self._apply_frame(photo_block, binary=True)
-        canvas.paste(photo_block, (PHOTO_BOX[0], PHOTO_BOX[1]))
+        canvas.paste(photo_block, (x, y))
 
         if qr_url.strip():
             self._paste_qr(canvas, qr_url.strip(), QR_DOWNLOAD_BOX, label="download")
-        if self.register_qr_url.strip():
-            self._paste_qr(
-                canvas,
-                self.register_qr_url.strip(),
-                QR_REGISTER_BOX,
-                label="register",
-            )
 
         strip = canvas.convert("1", dither=Image.Dither.NONE)
         if save and self.output_dir and photo_id:
@@ -145,33 +141,25 @@ class LayoutRenderer:
     def render_layout_color(
         self,
         photo_paths: Path | Sequence[Path],
-        qr_url: str,
-        photo_id: str,
+        qr_url: str = "",
+        photo_id: Optional[str] = None,
         save: bool = True,
     ) -> Image.Image:
-        """Full strip for guest download — colored template + photo + QR, no dither."""
+        """Color upload strip — photo + frame only (no QR; QR lives on the print)."""
+        del qr_url  # upload layout has no QR slots
         paths = self._normalize_paths(photo_paths)
         canvas = self._template_colored_rgb.copy()
+        x, y, w, h = UPLOAD_PHOTO_BOX
 
         photo = paths[0] if paths else None
-        photo_block = self._photo_block(photo, (PHOTO_BOX[2], PHOTO_BOX[3]), as_gray=False)
+        photo_block = self._photo_block(photo, (w, h), as_gray=False)
         photo_block = self._apply_frame(photo_block, binary=False)
-        canvas.paste(photo_block.convert("RGB"), (PHOTO_BOX[0], PHOTO_BOX[1]))
-
-        if qr_url.strip():
-            self._paste_qr(canvas, qr_url.strip(), QR_DOWNLOAD_BOX, label="download")
-        if self.register_qr_url.strip():
-            self._paste_qr(
-                canvas,
-                self.register_qr_url.strip(),
-                QR_REGISTER_BOX,
-                label="register",
-            )
+        canvas.paste(photo_block.convert("RGB"), (x, y))
 
         if save and self.output_dir and photo_id:
             out = self.output_dir / f"{photo_id}_layout.png"
             canvas.save(out)
-            logger.info("Saved color layout → %s", out)
+            logger.info("Saved color upload layout → %s", out)
         return canvas
 
     def render_layout_color_to_path(
@@ -195,11 +183,11 @@ class LayoutRenderer:
         photo_paths: Path | Sequence[Path],
         photo_id: str,
     ) -> Path:
-        """Save a color JPEG (guests download this) matching the print crop."""
+        """Save a color JPEG (framed crop) for local archive / Cloudinary photo asset."""
         if not self.output_dir:
             raise ValueError("output_dir is required")
         paths = self._normalize_paths(photo_paths)
-        size = (PHOTO_BOX[2] * DOWNLOAD_SCALE, PHOTO_BOX[3] * DOWNLOAD_SCALE)
+        size = (PRINT_PHOTO_BOX[2] * DOWNLOAD_SCALE, PRINT_PHOTO_BOX[3] * DOWNLOAD_SCALE)
         photo = self._photo_block(paths[0] if paths else None, size, as_gray=False)
         photo = self._apply_frame(photo, binary=False)
         photos_dir = self.output_dir.parent / "photos"
@@ -213,56 +201,54 @@ class LayoutRenderer:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _load_template(path: Path) -> Image.Image:
+    def _load_template(
+        path: Path,
+        *,
+        expected: tuple[int, int],
+        label: str,
+    ) -> Image.Image:
         if not path.exists():
             raise FileNotFoundError(
-                f"Không tìm thấy template in: {path} — đặt print_template.png "
-                f"({TEMPLATE_SIZE[0]}x{TEMPLATE_SIZE[1]}) vào assets/."
+                f"Không tìm thấy template {label}: {path} "
+                f"(cần {expected[0]}x{expected[1]})."
             )
         rgba = Image.open(path).convert("RGBA")
-        if rgba.size != TEMPLATE_SIZE:
+        if rgba.size != expected:
             raise ValueError(
-                f"Template {path} phải đúng {TEMPLATE_SIZE[0]}x{TEMPLATE_SIZE[1]} px "
+                f"Template {label} {path} phải đúng {expected[0]}x{expected[1]} px "
                 f"(hiện là {rgba.size[0]}x{rgba.size[1]})."
             )
         white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
         gray = Image.alpha_composite(white, rgba).convert("L")
-        return gray.point(lambda v: 0 if v < TEXT_THRESHOLD else 255)
+        # Floyd–Steinberg giữ tone xám logo/badge sau khi chỉnh sáng trên file nguồn.
+        return gray.convert("1", dither=Image.Dither.FLOYDSTEINBERG).convert("L")
 
     @staticmethod
-    def _load_template_rgb(path: Path) -> Image.Image:
-        """RGB template for guest color strip (logos/text on white, photo area empty)."""
-        if not path.exists():
-            raise FileNotFoundError(f"Không tìm thấy template in: {path}")
-        rgba = Image.open(path).convert("RGBA")
-        if rgba.size != TEMPLATE_SIZE:
-            raise ValueError(
-                f"Template {path} phải đúng {TEMPLATE_SIZE[0]}x{TEMPLATE_SIZE[1]} px "
-                f"(hiện là {rgba.size[0]}x{rgba.size[1]})."
-            )
-        white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
-        return Image.alpha_composite(white, rgba).convert("RGB")
-
-    @staticmethod
-    def _load_template_colored(path: Path) -> Image.Image:
-        """RGB colored template for Cloudinary guest strip (scaled to TEMPLATE_SIZE)."""
+    def _load_template_colored(
+        path: Path,
+        *,
+        expected: tuple[int, int],
+        label: str,
+    ) -> Image.Image:
         if not path.exists():
             raise FileNotFoundError(
-                f"Không tìm thấy template màu: {path} — đặt print_template_colored.png vào assets/."
+                f"Không tìm thấy template {label}: {path} "
+                f"(cần {expected[0]}x{expected[1]})."
             )
         rgba = Image.open(path).convert("RGBA")
         white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
         rgb = Image.alpha_composite(white, rgba).convert("RGB")
-        if rgb.size != TEMPLATE_SIZE:
+        if rgb.size != expected:
             logger.info(
-                "Scaled colored template %s from %sx%s → %sx%s",
+                "Scaled %s template %s from %sx%s → %sx%s",
+                label,
                 path,
                 rgb.width,
                 rgb.height,
-                TEMPLATE_SIZE[0],
-                TEMPLATE_SIZE[1],
+                expected[0],
+                expected[1],
             )
-            rgb = rgb.resize(TEMPLATE_SIZE, Image.Resampling.LANCZOS)
+            rgb = rgb.resize(expected, Image.Resampling.LANCZOS)
         return rgb
 
     @staticmethod
@@ -289,7 +275,7 @@ class LayoutRenderer:
         """Composite the film-strip overlay on a fitted photo.
 
         Transparent pixels show the photo; opaque black is the matte; white
-        is sprockets / frame number / BK FIRE marks.
+        is sprockets / TNE / FEIT marks.
         """
         overlay = self._frame_for_size(photo.size)
         if overlay is None:
@@ -325,29 +311,20 @@ class LayoutRenderer:
             fitted = cutout_on_white(fitted)
         if not as_gray:
             return fitted
-        # Tone curve ưu tiên da: lift midtone, highlight được phép cháy trắng
         gray = self._skin_protect_tone(fitted.convert("L"))
         gray = ImageEnhance.Sharpness(gray).enhance(HALFTONE_SHARPEN)
         return gray
 
     @staticmethod
     def _skin_protect_tone(gray: Image.Image) -> Image.Image:
-        """Map luminance so skin midtones keep halftone detail.
-
-        Aggressive autocontrast + contrast was crushing faces to near-black.
-        Instead: mild stretch → lift mids (gamma) → blow highlights toward white.
-        """
         gray = ImageOps.autocontrast(gray.convert("L"), cutoff=1)
         lut = []
         for i in range(256):
             x = i / 255.0
-            # Lift shadows/mids rồi kéo đậm ~15% (SKIN_DENSITY)
             x = x ** SKIN_LIFT_GAMMA
             x = min(1.0, x * SKIN_DENSITY)
-            # Highlight → cháy trắng (đánh đổi chi tiết áo)
             if x > HIGHLIGHT_START:
                 t = (x - HIGHLIGHT_START) / max(1e-6, 1.0 - HIGHLIGHT_START)
-                # power < 1 kéo nhanh về 1.0
                 t = t ** (1.0 / HIGHLIGHT_PUSH)
                 x = HIGHLIGHT_START + (1.0 - HIGHLIGHT_START) * t
             lut.append(int(round(min(1.0, x) * 255)))
@@ -355,7 +332,6 @@ class LayoutRenderer:
 
     @staticmethod
     def _comic_dot(gray: Image.Image, cell: int = HALFTONE_CELL) -> Image.Image:
-        """Circular comic-dot halftone → ``L`` image (0/255)."""
         gray = gray.convert("L")
         w, h = gray.size
         sampled = gray.filter(ImageFilter.BoxBlur(1))
@@ -370,7 +346,6 @@ class LayoutRenderer:
                 sx = min(cx + cell // 2, w - 1)
                 sy = min(cy + cell // 2, h - 1)
                 tone = pixels[sx, sy] / 255.0
-                # Gamma > 1: midtones → smaller dots (more face detail)
                 coverage = (1.0 - tone) ** DOT_COVERAGE_GAMMA
                 r2 = max_r2 * coverage
                 if r2 <= 0.12:
@@ -397,7 +372,6 @@ class LayoutRenderer:
         if self.output_dir:
             cache = self.output_dir.parent / "short_urls.json"
         short = shorten_url(url.strip(), cache_path=cache)
-        # EC Level L ≈ 7% — ít module nhất sau khi đã rút gọn URL.
         qr = qrcode.QRCode(
             version=None,
             error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -407,11 +381,9 @@ class LayoutRenderer:
         qr.add_data(short)
         qr.make(fit=True)
         modules = qr.modules_count
-        # Cả download & register cùng cạnh QR_RENDER_SIZE → kích thước in giống nhau.
         target = min(QR_RENDER_SIZE, min(w, h) - 2 * QR_QUIET_PX)
         target = max(target, 1)
-        native = modules  # 1 px/module trước khi scale đồng nhất
-        scale = target / native
+        scale = target / modules
         if scale < QR_MIN_MODULE_PX:
             logger.warning(
                 "QR %s: URL rút còn %d ký tự → %dx%d modules, ~%.1f px/module "
@@ -436,7 +408,6 @@ class LayoutRenderer:
         img = qr.make_image(fill_color="black", back_color="white").convert("L")
         img = img.resize((target, target), Image.Resampling.NEAREST)
 
-        # Chỉ xóa/đè đúng vùng QR — không wipe cả box (tránh che chữ trên/dưới).
         ox = x + (w - img.width) // 2
         oy = y + (h - img.height) // 2
         wipe = 255 if canvas.mode == "L" else (255, 255, 255)

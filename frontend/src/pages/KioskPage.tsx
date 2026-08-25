@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
-import { capturePrint, reprintLast } from '../api/client'
-import { useClock } from '../hooks/useClock'
+import { useCallback, useEffect, useState } from 'react'
+import { capturePrint, fetchRecentPrints, reprintPhoto } from '../api/client'
 import { useDeviceStatus } from '../hooks/useDeviceStatus'
 import { useLivePreview } from '../hooks/useLivePreview'
-import type { CaptureResult, CaptureSource, DitherStyle, DotKind } from '../types'
+import type { CaptureResult, CaptureSource, DitherStyle, DotKind, RecentPrint } from '../types'
 
 function dotClass(kind: DotKind) {
   return `sys-dot is-${kind}`
@@ -14,41 +13,49 @@ function deviceDot(ok: boolean): DotKind {
 }
 
 export function KioskPage() {
-  const { time, date } = useClock()
   const [busy, setBusy] = useState(false)
   const [ditherStyle, setDitherStyle] = useState<DitherStyle>('floyd')
   const [copies, setCopies] = useState(1)
   const [toast, setToast] = useState<{ text: string; kind?: 'busy' | 'ok' | 'err' } | null>(null)
-  const [result, setResult] = useState<CaptureResult | null>(null)
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const [resultBust, setResultBust] = useState(0)
+  const [recent, setRecent] = useState<RecentPrint[]>([])
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [historyBust, setHistoryBust] = useState(0)
 
   const { gphoto, webcam, printer, cloudinary, lastPrint, setLastPrint, refresh } =
     useDeviceStatus(busy)
+  const camOk = !!gphoto.connected
+  const webOk = !!webcam.connected
   const {
     videoRef,
     previewWanted,
     isLive,
+    isSonyLive,
+    sonyStreamUrl,
+    onSonyStreamError,
     subtitle,
     setSubtitle,
     resBadge,
     setWanted,
     updateResBadge,
     withPreviewPaused,
-  } = useLivePreview(busy)
+    cameras,
+    selectedDeviceId,
+    selectCamera,
+  } = useLivePreview(busy, camOk)
 
-  const camOk = !!gphoto.connected
-  const webOk = !!webcam.connected
-  const hasLast = !!(lastPrint?.photo_id || result?.photo_id)
+  const refreshRecent = useCallback(async () => {
+    try {
+      const items = await fetchRecentPrints(6)
+      setRecent(items)
+      setSelectedIds((prev) => prev.filter((id) => items.some((item) => item.photo_id === id)))
+    } catch {
+      /* ignore poll errors */
+    }
+  }, [])
 
-  const hints = useMemo(
-    () => ({
-      camera: camOk ? 'Capture by Camera & Print' : gphoto.error || 'Camera disconnected',
-      webcam: webOk ? 'Capture by Webcam & Print' : webcam.error || 'Webcam unavailable',
-      reprint: hasLast ? 'Reprint' : 'No previous print',
-    }),
-    [camOk, webOk, hasLast, gphoto.error, webcam.error],
-  )
+  useEffect(() => {
+    void refreshRecent()
+  }, [refreshRecent])
 
   useEffect(() => {
     if (!toast || toast.kind === 'busy') return
@@ -61,16 +68,21 @@ export function KioskPage() {
     if (!isLive && kind !== 'ok') setSubtitle(text)
   }
 
-  function showResult(data: CaptureResult) {
-    setResult(data)
-    setResultBust(Date.now())
-    setDrawerOpen(true)
+  function rememberResult(data: CaptureResult) {
+    setHistoryBust(Date.now())
     setLastPrint({
       photo_id: data.photo_id,
       layout_url: data.layout_url,
       photo_url: data.photo_url,
       captured_at: data.captured_at,
     })
+    void refreshRecent()
+  }
+
+  function toggleSelect(photoId: string) {
+    setSelectedIds((prev) =>
+      prev.includes(photoId) ? prev.filter((id) => id !== photoId) : [...prev, photoId],
+    )
   }
 
   async function runCapture(source: CaptureSource, busyLabel: string) {
@@ -78,10 +90,10 @@ export function KioskPage() {
     showStatus(busyLabel, 'busy')
     const doRequest = () => capturePrint(source, ditherStyle)
     try {
-      const data =
-        source === 'webcam' ? await withPreviewPaused(doRequest) : await doRequest()
-      showStatus(data.message || 'Xong', data.printed ? 'ok' : 'err')
-      showResult(data)
+      const data = await withPreviewPaused(doRequest)
+      showStatus(data.message || 'Done', data.printed ? 'ok' : 'err')
+      rememberResult(data)
+      setSelectedIds([data.photo_id])
     } catch (err) {
       showStatus(String(err instanceof Error ? err.message : err), 'err')
     } finally {
@@ -90,15 +102,29 @@ export function KioskPage() {
     }
   }
 
-  async function runReprint() {
+  async function runReprintSelected() {
+    if (!selectedIds.length) {
+      showStatus('Select at least 1 photo to reprint', 'err')
+      return
+    }
     const n = Math.max(1, Math.min(20, copies || 1))
     setCopies(n)
     setBusy(true)
-    showStatus(n > 1 ? `Đang in lại ${n} bản…` : 'Đang in lại lần gần nhất…', 'busy')
+    showStatus(
+      selectedIds.length > 1
+        ? `Reprinting ${selectedIds.length} photos × ${n} copies…`
+        : n > 1
+          ? `Reprinting ${n} copies…`
+          : 'Reprinting…',
+      'busy',
+    )
     try {
-      const data = await reprintLast(ditherStyle, n)
-      showStatus(data.message || 'Xong', data.printed ? 'ok' : 'err')
-      showResult(data)
+      let last: CaptureResult | null = null
+      for (const photoId of selectedIds) {
+        last = await reprintPhoto(photoId, ditherStyle, n)
+      }
+      showStatus(last?.message || 'Done', last?.printed ? 'ok' : 'err')
+      if (last) rememberResult(last)
     } catch (err) {
       showStatus(String(err instanceof Error ? err.message : err), 'err')
     } finally {
@@ -107,47 +133,26 @@ export function KioskPage() {
     }
   }
 
-  const bust = resultBust ? `?t=${resultBust}` : ''
+  const bust = historyBust ? `?t=${historyBust}` : ''
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="topbar__logos">
-          <img
-            className="topbar__logo topbar__logo--uni"
-            src="/img/logo-bachkhoa.png"
-            alt="ĐH Bách Khoa TP.HCM"
-            width={44}
-            height={44}
-          />
-          <span className="topbar__divider" aria-hidden="true" />
-          <img
-            className="topbar__logo topbar__logo--club"
-            src="/img/logo-bkfire.png"
-            alt="BK FIRE"
-            width={40}
-            height={40}
-          />
-        </div>
-
-        <div className="topbar__center">
-          <span className="event-pill">📸 Photobooth · Club Day 2026</span>
-        </div>
-
-        <div className="topbar__clock" aria-live="polite">
-          <time className="topbar__time">{time}</time>
-          <time className="topbar__date">{date}</time>
-        </div>
+      <header className="brand-header">
+        <img
+          className="brand-header__logo"
+          src="/img/uts/lockup-full.png"
+          alt="UTS and Ho Chi Minh City University of Technology"
+        />
       </header>
 
-      <div className="sysbar" aria-label="Trạng thái hệ thống">
+      <div className="sysbar" aria-label="System status">
         <div className="sysbar__inner">
           <div className="sysbar__items">
             <div className="sys-item">
               <span className={dotClass(deviceDot(camOk))} />
-              <span className="sys-label">Máy ảnh:</span>
+              <span className="sys-label">Camera:</span>
               <span className={`sys-value${camOk ? '' : ' is-warn'}`}>
-                {camOk ? gphoto.model || 'OK' : 'chờ kết nối'}
+                {camOk ? gphoto.model || 'OK' : 'waiting'}
               </span>
             </div>
             <div className="sys-item">
@@ -155,7 +160,7 @@ export function KioskPage() {
               <span className={dotClass(deviceDot(webOk))} />
               <span className="sys-label">Webcam:</span>
               <span className={`sys-value${webOk ? '' : ' is-warn'}`}>
-                {webOk ? webcam.model || 'OK' : 'chưa sẵn sàng'}
+                {webOk ? webcam.model || 'OK' : 'not ready'}
               </span>
             </div>
             <div className="sys-item">
@@ -163,7 +168,7 @@ export function KioskPage() {
               <span className={dotClass(deviceDot(!!printer.connected))} />
               <span className="sys-label">Printer:</span>
               <span className={`sys-value${printer.connected ? '' : ' is-warn'}`}>
-                {printer.connected ? `OK (${printer.backend || 'usb'})` : 'chưa thấy'}
+                {printer.connected ? `OK (${printer.backend || 'usb'})` : 'not found'}
               </span>
             </div>
             <div className="sys-item">
@@ -171,85 +176,25 @@ export function KioskPage() {
               <span className={dotClass(deviceDot(!!cloudinary.enabled))} />
               <span className="sys-label">Cloudinary:</span>
               <span className={`sys-value${cloudinary.enabled ? '' : ' is-warn'}`}>
-                {cloudinary.enabled ? 'OK' : 'chưa cấu hình'}
+                {cloudinary.enabled ? 'OK' : 'not configured'}
               </span>
             </div>
             <div className="sys-item">
               <span className="sys-sep">·</span>
-              <span className={dotClass(hasLast ? 'ok' : 'muted')} />
+              <span className={dotClass(lastPrint?.photo_id ? 'ok' : 'muted')} />
               <span className="sys-label">Last:</span>
               <span className="sys-value">
                 {lastPrint?.photo_id ? `#${lastPrint.photo_id}` : '—'}
               </span>
             </div>
           </div>
-          <div className="sysbar__pulse" title="System">
-            <span className="sys-label">SYS</span>
-            <span className="pulse-bars" aria-hidden="true">
-              <i /><i /><i /><i /><i /><i /><i />
-            </span>
-          </div>
         </div>
       </div>
 
       <main className="stage">
-        <section
-          className={`viewport${isLive ? ' is-live' : ''}${busy ? ' is-busy' : ''}`}
-          aria-label="Live camera feed"
-        >
-          <video
-            ref={videoRef}
-            className="viewport__video"
-            playsInline
-            muted
-            autoPlay
-            hidden={!isLive}
-            onLoadedMetadata={updateResBadge}
-          />
-
-          <div className="viewport__idle">
-            <div className="viewport__focus">
-              <img
-                className="viewport__cam-icon"
-                src="/img/icons/icon-camera-placeholder.svg"
-                alt=""
-                width={80}
-                height={80}
-              />
-              <img
-                className="viewport__bracket"
-                src="/img/icons/icon-focus-bracket.svg"
-                alt=""
-                width={72}
-                height={72}
-              />
-            </div>
-            <p className="viewport__title">LIVE CAMERA FEED</p>
-            <p className="viewport__subtitle">{subtitle}</p>
-            {!isLive && (
-              <button type="button" className="enable-cam" onClick={() => void setWanted(true, true)}>
-                {previewWanted ? 'Cho phép Camera' : 'Bật Preview Webcam'}
-              </button>
-            )}
-          </div>
-
-          <div className={`live-badge${isLive ? '' : ' is-off'}`}>
-            <span className="live-badge__dot" />
-            <span>{isLive ? 'LIVE' : 'OFF'}</span>
-          </div>
-          <button
-            type="button"
-            className="preview-toggle"
-            aria-pressed={previewWanted}
-            title="Bật/tắt live webcam"
-            onClick={() => void setWanted(!previewWanted, true)}
-          >
-            Preview <span>{previewWanted ? 'ON' : 'OFF'}</span>
-          </button>
-          <div className="res-badge">{resBadge}</div>
-
-          <fieldset className="style-chip" aria-label="Kiểu dither in">
-            <legend>Kiểu in</legend>
+        <aside className="stage-panel stage-panel--left control-panel" aria-label="Capture controls">
+          <fieldset className="style-chip style-chip--rail" aria-label="Print dither style">
+            <legend>Print style</legend>
             <label className="style-chip__opt">
               <input
                 type="radio"
@@ -271,85 +216,156 @@ export function KioskPage() {
               <span>Comic-dot</span>
             </label>
           </fieldset>
-        </section>
 
-        <aside className="result-drawer" hidden={!drawerOpen} aria-label="Kết quả chụp">
-          <div className="result-drawer__head">
-            <h2>Kết quả</h2>
+          <div className="actions actions--rail" role="group" aria-label="Capture and print">
             <button
+              className="btn btn--primary btn--rail"
               type="button"
-              className="result-drawer__close"
-              aria-label="Đóng"
-              onClick={() => setDrawerOpen(false)}
+              disabled={busy || !camOk}
+              onClick={() => void runCapture('gphoto', 'Capturing with camera → Cloudinary → print…')}
             >
-              ×
+              <img src="/img/icons/icon-camera.svg" alt="" width={22} height={22} />
+              <span className="btn__text">
+                <span className="btn__label">Camera</span>
+              </span>
+            </button>
+
+            <button
+              className="btn btn--primary btn--solid btn--rail"
+              type="button"
+              disabled={busy || !webOk}
+              onClick={() => void runCapture('webcam', 'Capturing with webcam → Cloudinary → print…')}
+            >
+              <img src="/img/icons/icon-webcam.svg" alt="" width={22} height={22} />
+              <span className="btn__text">
+                <span className="btn__label">Webcam</span>
+              </span>
             </button>
           </div>
-          <p className="result-drawer__msg">
-            {result
-              ? `#${result.photo_id} · ${result.captured_at || ''} · QR: ${
-                  result.cloudinary_url || result.qr_url || ''
-                }`
-              : ''}
-          </p>
-          {result && (
-            <>
-              <img
-                className="result-drawer__photo"
-                src={`${result.photo_url}${bust}`}
-                alt="Ảnh đã chụp"
-              />
-              <div className="result-drawer__thumbs">
-                {(result.frame_urls || []).map((url, i) => (
-                  <figure key={url}>
-                    <figcaption>Tấm {i + 1}</figcaption>
-                    <img src={`${url}${bust}`} alt={`Frame ${i + 1}`} />
-                  </figure>
-                ))}
-              </div>
-              <figure className="result-drawer__print">
-                <figcaption>Layout in (thermal)</figcaption>
-                <img src={`${result.layout_url}${bust}`} alt="Layout máy in nhiệt" />
-              </figure>
-              {result.layout_color_url && (
-                <figure className="result-drawer__print">
-                  <figcaption>Layout màu (guest)</figcaption>
-                  <img src={`${result.layout_color_url}${bust}`} alt="Layout màu cho guest" />
-                </figure>
-              )}
-            </>
-          )}
         </aside>
 
-        <div className="actions" role="group" aria-label="Chụp và in">
-          <button
-            className="btn btn--primary"
-            type="button"
-            disabled={busy || !camOk}
-            onClick={() => void runCapture('gphoto', 'Đang chụp bằng máy ảnh → Cloudinary → in…')}
+        <div className="stage-center">
+          <section
+            className={`viewport${isLive ? ' is-live' : ''}${busy ? ' is-busy' : ''}`}
+            aria-label="Live camera feed"
           >
-            <img src="/img/icons/icon-camera.svg" alt="" width={22} height={22} />
-            <span className="btn__text">
-              <span className="btn__label">Chụp bằng Máy Ảnh &amp; In</span>
-              <span className="btn__hint">{hints.camera}</span>
-            </span>
-          </button>
+            <video
+              ref={videoRef}
+              className="viewport__video"
+              playsInline
+              muted
+              autoPlay
+              hidden={!isLive || isSonyLive}
+              onLoadedMetadata={updateResBadge}
+            />
+            {isSonyLive && sonyStreamUrl && (
+              <img
+                className="viewport__video viewport__liveview"
+                src={sonyStreamUrl}
+                alt="Sony live view"
+                onError={onSonyStreamError}
+              />
+            )}
 
-          <button
-            className="btn btn--primary btn--solid"
-            type="button"
-            disabled={busy || !webOk}
-            onClick={() => void runCapture('webcam', 'Đang chụp bằng webcam → Cloudinary → in…')}
-          >
-            <img src="/img/icons/icon-webcam.svg" alt="" width={22} height={22} />
-            <span className="btn__text">
-              <span className="btn__label">Chụp bằng Webcam &amp; In</span>
-              <span className="btn__hint">{hints.webcam}</span>
-            </span>
-          </button>
+            <div className="viewport__idle" hidden={isLive}>
+              <div className="viewport__focus">
+                <img
+                  className="viewport__cam-icon"
+                  src="/img/icons/icon-camera-placeholder.svg"
+                  alt=""
+                  width={80}
+                  height={80}
+                />
+                <img
+                  className="viewport__bracket"
+                  src="/img/icons/icon-focus-bracket.svg"
+                  alt=""
+                  width={72}
+                  height={72}
+                />
+              </div>
+              <p className="viewport__title">Live camera</p>
+              <p className="viewport__subtitle">{subtitle}</p>
+              {!isLive && (
+                <button type="button" className="enable-cam" onClick={() => void setWanted(true, true)}>
+                  {previewWanted ? 'Allow Camera' : 'Enable Webcam Preview'}
+                </button>
+              )}
+            </div>
 
-          <div className="reprint-group">
-            <label className="copies-chip" htmlFor="reprintCopies">
+            <div className={`live-badge${isLive ? '' : ' is-off'}`}>
+              <span className="live-badge__dot" />
+              <span>{isLive ? 'LIVE' : 'OFF'}</span>
+            </div>
+            <button
+              type="button"
+              className="preview-toggle"
+              aria-pressed={previewWanted}
+              title="Toggle live webcam"
+              onClick={() => void setWanted(!previewWanted, true)}
+            >
+              Preview <span>{previewWanted ? 'ON' : 'OFF'}</span>
+            </button>
+            {cameras.length > 0 && (
+              <label className="camera-picker" title="Select preview camera">
+                <span className="camera-picker__label">Cam</span>
+                <select
+                  className="camera-picker__select"
+                  value={selectedDeviceId}
+                  disabled={busy}
+                  aria-label="Select preview camera"
+                  onChange={(e) => void selectCamera(e.target.value)}
+                >
+                  {!selectedDeviceId && <option value="">Default</option>}
+                  {cameras.map((cam) => (
+                    <option key={cam.deviceId} value={cam.deviceId}>
+                      {cam.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="res-badge">{resBadge}</div>
+          </section>
+        </div>
+
+        <aside className="stage-panel stage-panel--right history-panel" aria-label="Recent prints">
+          <div className="history-panel__head">
+            <h2>Recent prints</h2>
+            <span className="history-panel__meta">{selectedIds.length}/6 selected</span>
+          </div>
+          <p className="history-panel__hint">Color layouts (Cloudinary) — last 6 prints</p>
+
+          <div className="history-panel__grid">
+            {recent.length === 0 && (
+              <p className="history-panel__empty">No prints yet — capture a photo to see it here</p>
+            )}
+            {recent.map((item) => {
+              const selected = selectedIds.includes(item.photo_id)
+              return (
+                <button
+                  key={item.photo_id}
+                  type="button"
+                  className={`history-card${selected ? ' is-selected' : ''}`}
+                  aria-pressed={selected}
+                  disabled={busy}
+                  onClick={() => toggleSelect(item.photo_id)}
+                >
+                  <img
+                    src={`${item.layout_color_url}${bust}`}
+                    alt={`Layout ${item.photo_id}`}
+                  />
+                  <span className="history-card__id">#{item.photo_id.slice(0, 8)}</span>
+                  {item.captured_at && (
+                    <span className="history-card__time">{item.captured_at}</span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+
+          <div className="history-panel__actions">
+            <label className="copies-chip copies-chip--panel" htmlFor="reprintCopies">
               <span>Copies</span>
               <input
                 id="reprintCopies"
@@ -358,24 +374,29 @@ export function KioskPage() {
                 max={20}
                 value={copies}
                 inputMode="numeric"
-                aria-label="Số bản in lại"
+                aria-label="Reprint copies"
+                disabled={busy}
                 onChange={(e) => setCopies(Number.parseInt(e.target.value || '1', 10) || 1)}
               />
             </label>
             <button
-              className="btn btn--outline"
+              className="btn btn--outline btn--panel"
               type="button"
-              disabled={busy || !hasLast}
-              onClick={() => void runReprint()}
+              disabled={busy || selectedIds.length === 0}
+              onClick={() => void runReprintSelected()}
             >
               <img src="/img/icons/icon-reprint.svg" alt="" width={20} height={20} />
               <span className="btn__text">
-                <span className="btn__label">In lại</span>
-                <span className="btn__hint">{hints.reprint}</span>
+                <span className="btn__label">Reprint selected</span>
+                <span className="btn__hint">
+                  {selectedIds.length
+                    ? `${selectedIds.length} photos × ${copies}`
+                    : 'Select photos above'}
+                </span>
               </span>
             </button>
           </div>
-        </div>
+        </aside>
 
         <div
           className={`toast${toast?.kind ? ` is-${toast.kind}` : ''}`}

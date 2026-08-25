@@ -87,10 +87,10 @@
     if (!isLive && viewportSubtitle && !busy) {
       viewportSubtitle.textContent = previewWanted
         ? explainCameraBlock()
-        : "Preview đang tắt — bấm để bật khi cần";
+        : "Preview is off — tap to enable when needed";
     }
     if (btnEnableCam && !isLive) {
-      btnEnableCam.textContent = previewWanted ? "Cho phép Camera" : "Bật Preview Webcam";
+      btnEnableCam.textContent = previewWanted ? "Allow Camera" : "Enable Webcam Preview";
     }
   }
 
@@ -111,12 +111,12 @@
 
   function explainCameraBlock() {
     if (!window.isSecureContext) {
-      return "Mở qua http://127.0.0.1:8000 (HTTPS/localhost) để dùng Camera";
+      return "Open via http://127.0.0.1:8000 (HTTPS/localhost) to use the camera";
     }
     if (!cameraApiAvailable()) {
-      return "Trình duyệt hiện không mở được Camera API";
+      return "This browser cannot access the Camera API";
     }
-    return "Bấm “Cho phép Camera” để hiện hộp thoại quyền";
+    return "Tap “Allow Camera” to show the permission prompt";
   }
 
   function updateResBadge() {
@@ -156,12 +156,12 @@
     startingPreview = true;
     if (btnEnableCam) {
       btnEnableCam.disabled = true;
-      btnEnableCam.textContent = "Đang xin quyền…";
+      btnEnableCam.textContent = "Requesting permission…";
     }
     if (viewportSubtitle) {
       viewportSubtitle.textContent = fromUserGesture
-        ? "Đang yêu cầu quyền Camera…"
-        : "Đang kết nối webcam…";
+        ? "Requesting camera permission…"
+        : "Connecting webcam…";
     }
 
     try {
@@ -184,22 +184,22 @@
       return true;
     } catch (err) {
       setLiveUi(false);
-      let msg = "Không mở được webcam preview";
+      let msg = "Could not open webcam preview";
       if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
         msg = fromUserGesture
-          ? "Bạn đã từ chối Camera — hãy bật lại trong thanh địa chỉ"
-          : "Cần cho phép Camera — bấm nút bên dưới";
+          ? "Camera permission denied — enable it in the address bar"
+          : "Camera permission needed — tap the button below";
       } else if (err?.name === "NotFoundError" || err?.name === "DevicesNotFoundError") {
-        msg = "Không tìm thấy webcam";
+        msg = "No webcam found";
       } else if (err?.name === "NotReadableError" || err?.name === "TrackStartError") {
-        msg = "Webcam đang bị app khác giữ — đóng Zoom/Meet rồi thử lại";
+        msg = "Webcam is in use by another app — close Zoom/Meet and try again";
       } else if (!window.isSecureContext) {
         msg = explainCameraBlock();
       }
       if (viewportSubtitle) viewportSubtitle.textContent = msg;
       if (btnEnableCam) {
         btnEnableCam.hidden = false;
-        btnEnableCam.textContent = "Cho phép Camera";
+        btnEnableCam.textContent = "Allow Camera";
       }
       return false;
     } finally {
@@ -294,23 +294,23 @@
     if (valCamera) {
       valCamera.textContent = camOk
         ? cameras.gphoto.model || "OK"
-        : "chờ kết nối";
+        : "waiting";
       valCamera.classList.toggle("is-warn", !camOk);
     }
     if (valWebcam) {
       valWebcam.textContent = webOk
         ? cameras.webcam.model || "OK"
-        : "chưa sẵn sàng";
+        : "not ready";
       valWebcam.classList.toggle("is-warn", !webOk);
     }
     if (valPrinter) {
       valPrinter.textContent = prnOk
         ? `OK (${data.printer.backend || "usb"})`
-        : "chưa thấy";
+        : "not found";
       valPrinter.classList.toggle("is-warn", !prnOk);
     }
     if (valCloud) {
-      valCloud.textContent = cloudOk ? "OK" : "chưa cấu hình";
+      valCloud.textContent = cloudOk ? "OK" : "not configured";
       valCloud.classList.toggle("is-warn", !cloudOk);
     }
     if (valLast) {
@@ -346,7 +346,7 @@
     (urls || []).forEach((url, i) => {
       const fig = document.createElement("figure");
       const cap = document.createElement("figcaption");
-      cap.textContent = `Tấm ${i + 1}`;
+      cap.textContent = `Frame ${i + 1}`;
       const img = document.createElement("img");
       img.src = `${url}?t=${Date.now()}`;
       img.alt = `Frame ${i + 1}`;
@@ -395,7 +395,7 @@
       const res = await fetch("/api/capture-print", { method: "POST", body });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data.detail || res.statusText || "Lỗi không xác định");
+        throw new Error(data.detail || res.statusText || "Unknown error");
       }
       return data;
     };
@@ -425,7 +425,7 @@
     if (reprintCopies) reprintCopies.value = String(copies);
     setBusy(true);
     setStatus(
-      copies > 1 ? `Đang in lại ${copies} bản…` : "Đang in lại lần gần nhất…",
+      copies > 1 ? `Reprinting ${copies} copies…` : "Reprinting last print…",
       "busy"
     );
     const body = new FormData();
@@ -435,7 +435,7 @@
       const res = await fetch("/api/reprint-last", { method: "POST", body });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data.detail || res.statusText || "Lỗi không xác định");
+        throw new Error(data.detail || res.statusText || "Unknown error");
       }
       setStatus(data.message, data.printed ? "ok" : "err");
       showResult(data);
@@ -448,10 +448,10 @@
   }
 
   btnCamera?.addEventListener("click", () =>
-    runCapture("gphoto", "Đang chụp bằng máy ảnh → Cloudinary → in…")
+    runCapture("gphoto", "Capturing with camera → Cloudinary → print…")
   );
   btnWebcam?.addEventListener("click", () =>
-    runCapture("webcam", "Đang chụp bằng webcam → Cloudinary → in…")
+    runCapture("webcam", "Capturing with webcam → Cloudinary → print…")
   );
   btnReprint?.addEventListener("click", runReprint);
   btnCloseResult?.addEventListener("click", closeResult);
@@ -472,7 +472,7 @@
   });
 
   if (viewportSubtitle) {
-    viewportSubtitle.textContent = "Preview đang tắt — bấm để bật khi cần";
+    viewportSubtitle.textContent = "Preview is off — tap to enable when needed";
   }
   setLiveUi(false);
 

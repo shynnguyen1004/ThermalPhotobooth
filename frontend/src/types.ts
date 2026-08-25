@@ -52,6 +52,14 @@ export type GuestPhotoAssets = {
 export type DitherStyle = 'floyd' | 'comic'
 export type CaptureSource = 'gphoto' | 'webcam'
 
+export type RecentPrint = {
+  photo_id: string
+  layout_color_url: string
+  layout_url?: string | null
+  photo_url?: string | null
+  captured_at?: string | null
+}
+
 export type AppConfig = {
   org_name: string
   cloudinary_enabled: boolean

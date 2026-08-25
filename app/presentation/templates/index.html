@@ -1,43 +1,34 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{{ org_name }} Thermal Photobooth - Club Day 2026</title>
+  <title>{{ org_name }} Photobooth</title>
+  <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml" />
   <link rel="icon" href="/static/img/favicon.ico" sizes="any" />
-  <link rel="icon" type="image/png" href="/static/img/favicon.png" sizes="32x32" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <div class="app">
-    <header class="topbar">
-      <div class="topbar__logos">
-        <img class="topbar__logo topbar__logo--uni" src="/static/img/logo-bachkhoa.png" alt="ĐH Bách Khoa TP.HCM" width="44" height="44" />
-        <span class="topbar__divider" aria-hidden="true"></span>
-        <img class="topbar__logo topbar__logo--club" src="/static/img/logo-bkfire.png" alt="BK FIRE" width="40" height="40" />
-      </div>
-
-      <div class="topbar__center">
-        <span class="event-pill">📸 Photobooth · Club Day 2026</span>
-      </div>
-
-      <div class="topbar__clock" aria-live="polite">
-        <time id="clockTime" class="topbar__time">00:00:00</time>
-        <time id="clockDate" class="topbar__date">--.--.----</time>
-      </div>
+    <header class="brand-header">
+      <img
+        class="brand-header__logo"
+        src="/static/img/uts/lockup-full.png"
+        alt="UTS and Ho Chi Minh City University of Technology"
+      />
     </header>
 
-    <div class="sysbar" aria-label="Trạng thái hệ thống">
+    <div class="sysbar" aria-label="System status">
       <div class="sysbar__inner">
         <div class="sysbar__items">
           <div class="sys-item" data-key="camera">
             <span class="sys-dot is-warn" id="dotCamera"></span>
-            <span class="sys-label">Máy ảnh:</span>
-            <span class="sys-value is-warn" id="valCamera">chờ kết nối</span>
+            <span class="sys-label">Camera:</span>
+            <span class="sys-value is-warn" id="valCamera">waiting</span>
           </div>
           <div class="sys-item" data-key="webcam">
             <span class="sys-sep">·</span>
@@ -55,7 +46,7 @@
             <span class="sys-sep">·</span>
             <span class="sys-dot {% if cloudinary_enabled %}is-ok{% else %}is-warn{% endif %}" id="dotCloud"></span>
             <span class="sys-label">Cloudinary:</span>
-            <span class="sys-value" id="valCloud">{% if cloudinary_enabled %}OK{% else %}chưa cấu hình{% endif %}</span>
+            <span class="sys-value" id="valCloud">{% if cloudinary_enabled %}OK{% else %}not configured{% endif %}</span>
           </div>
           <div class="sys-item" data-key="last">
             <span class="sys-sep">·</span>
@@ -90,9 +81,9 @@
             <img class="viewport__bracket" src="/static/img/icons/icon-focus-bracket.svg" alt="" width="72" height="72" />
           </div>
           <p class="viewport__title">LIVE CAMERA FEED</p>
-          <p class="viewport__subtitle" id="viewportSubtitle">Preview đang tắt — bấm để bật khi cần</p>
+          <p class="viewport__subtitle" id="viewportSubtitle">Preview is off — tap to enable when needed</p>
           <button type="button" class="enable-cam" id="btnEnableCam">
-            Bật Preview Webcam
+            Enable Webcam Preview
           </button>
         </div>
 
@@ -100,13 +91,13 @@
           <span class="live-badge__dot"></span>
           <span id="liveBadgeText">OFF</span>
         </div>
-        <button type="button" class="preview-toggle" id="btnPreviewToggle" aria-pressed="false" title="Bật/tắt live webcam">
+        <button type="button" class="preview-toggle" id="btnPreviewToggle" aria-pressed="false" title="Toggle live webcam">
           Preview <span id="previewToggleState">OFF</span>
         </button>
         <div class="res-badge" id="resBadge">—</div>
 
-        <fieldset class="style-chip" aria-label="Kiểu dither in">
-          <legend>Kiểu in</legend>
+        <fieldset class="style-chip" aria-label="Print dither style">
+          <legend>Print style</legend>
           <label class="style-chip__opt">
             <input type="radio" name="ditherStyle" value="floyd" checked />
             <span>Floyd</span>
@@ -118,34 +109,32 @@
         </fieldset>
       </section>
 
-      <aside class="result-drawer" id="resultDrawer" hidden aria-label="Kết quả chụp">
+      <aside class="result-drawer" id="resultDrawer" hidden aria-label="Capture result">
         <div class="result-drawer__head">
-          <h2>Kết quả</h2>
-          <button type="button" class="result-drawer__close" id="btnCloseResult" aria-label="Đóng">×</button>
+          <h2>Result</h2>
+          <button type="button" class="result-drawer__close" id="btnCloseResult" aria-label="Close">×</button>
         </div>
         <p id="resultMsg" class="result-drawer__msg"></p>
-        <img id="photoPreview" class="result-drawer__photo" alt="Ảnh đã chụp" />
+        <img id="photoPreview" class="result-drawer__photo" alt="Captured photo" />
         <div class="result-drawer__thumbs" id="frameGrid"></div>
         <figure class="result-drawer__print">
-          <figcaption>Layout in</figcaption>
-          <img id="printPreview" alt="Layout máy in nhiệt" />
+          <figcaption>Print layout</figcaption>
+          <img id="printPreview" alt="Thermal print layout" />
         </figure>
       </aside>
 
-      <div class="actions" role="group" aria-label="Chụp và in">
+      <div class="actions" role="group" aria-label="Capture and print">
         <button id="btnCamera" class="btn btn--primary" type="button" disabled>
           <img src="/static/img/icons/icon-camera.svg" alt="" width="22" height="22" />
           <span class="btn__text">
-            <span class="btn__label">Chụp bằng Máy Ảnh &amp; In</span>
-            <span class="btn__hint" id="hintCamera">Capture by Camera &amp; Print</span>
+            <span class="btn__label">Camera</span>
           </span>
         </button>
 
         <button id="btnWebcam" class="btn btn--primary btn--solid" type="button" disabled>
           <img src="/static/img/icons/icon-webcam.svg" alt="" width="22" height="22" />
           <span class="btn__text">
-            <span class="btn__label">Chụp bằng Webcam &amp; In</span>
-            <span class="btn__hint" id="hintWebcam">Capture by Webcam &amp; Print</span>
+            <span class="btn__label">Webcam</span>
           </span>
         </button>
 
@@ -159,13 +148,13 @@
               max="20"
               value="1"
               inputmode="numeric"
-              aria-label="Số bản in lại"
+              aria-label="Reprint copies"
             />
           </label>
           <button id="btnReprint" class="btn btn--outline" type="button" disabled>
             <img src="/static/img/icons/icon-reprint.svg" alt="" width="20" height="20" />
             <span class="btn__text">
-              <span class="btn__label">In lại</span>
+              <span class="btn__label">Reprint</span>
               <span class="btn__hint" id="hintReprint">Reprint</span>
             </span>
           </button>

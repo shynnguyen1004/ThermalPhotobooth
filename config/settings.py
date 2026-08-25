@@ -26,14 +26,14 @@ class Settings(BaseSettings):
     )
 
     # Branding
-    org_name: str = "BKFIRE"
+    org_name: str = "University of Technology Sydney"
 
-    # Print template — chữ/logo/QR frames cố định (384x955 @ 203 DPI)
-    print_template_path: Path = ROOT_DIR / "assets" / "print_template.png"
-    # Template màu cho layout guest / Cloudinary (cùng bố cục, có thể khác kích thước gốc)
-    print_template_colored_path: Path = ROOT_DIR / "assets" / "print_template_colored.png"
+    # Print template B&W — UTS TNE commencement (409×1050; máy in scale → 384 px)
+    print_template_path: Path = ROOT_DIR / "assets" / "uts_print_layout_template.png"
+    # Template màu upload Cloudinary (439×806) — ảnh + frame, không QR
+    print_template_colored_path: Path = ROOT_DIR / "assets" / "uts_upload_layout_template.png"
     # Film-strip overlay chèn lên ảnh sau khi chụp (RGBA, vùng trong suốt = ảnh)
-    frame_border_path: Path = ROOT_DIR / "assets" / "frame_border.png"
+    frame_border_path: Path = ROOT_DIR / "assets" / "uts_frame_border.png"
 
     # Print layout (POS58: 384 px @ 203 DPI)
     print_width_px: int = 384
@@ -65,17 +65,17 @@ class Settings(BaseSettings):
     # Faculties / majors shown in the UI dropdown
     faculties: List[str] = Field(
         default_factory=lambda: [
-            "Khoa Khoa học và Kỹ thuật Máy tính",
-            "Khoa Điện - Điện tử",
-            "Khoa Cơ khí",
-            "Khoa Xây dựng",
-            "Khoa Hóa học & Kỹ thuật Hóa học",
-            "Khoa Kỹ thuật Giao thông",
-            "Khoa Quản lý Công nghiệp",
-            "Khoa Khoa học Ứng dụng",
-            "Khoa Môi trường & Tài nguyên",
-            "Khoa Kỹ thuật Địa chất & Dầu khí",
-            "Khác / Club Day Guest",
+            "Faculty of Computer Science & Engineering",
+            "Faculty of Electrical & Electronics Engineering",
+            "Faculty of Mechanical Engineering",
+            "Faculty of Civil Engineering",
+            "Faculty of Chemical Engineering",
+            "Faculty of Transportation Engineering",
+            "Faculty of Industrial Management",
+            "Faculty of Applied Science",
+            "Faculty of Environment & Natural Resources",
+            "Faculty of Geology & Petroleum Engineering",
+            "Other / Guest",
         ]
     )
 
@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     printer_cups_name: str = "POS58"
     # "usb" | "cups" | "file" (file = save raster only, for dry-run)
     printer_backend: str = "usb"
+    # USB pacing (0 = full-speed, không delay). Hiện không chia chunk ảnh.
+    printer_band_pace_sec: float = 0.0
+    # ESC 7 heat: dots, time, interval (interval cao → đầu nhiệt nguội hơn, ít ghost)
+    printer_heat_dots: int = 7
+    printer_heat_time: int = 70
+    printer_heat_interval: int = 4
 
     # Camera: auto | gphoto | webcam
     # auto = Sony USB nếu có, không thì MacBook FaceTime

@@ -7,15 +7,17 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import iterate_in_threadpool
 
 from app.application.layout_service import LayoutRenderer
 from app.application.photobooth_service import CaptureMode, PhotoboothService
 from app.domain.models import PrintJobRequest
 from app.infrastructure.camera.auto_camera import AutoCamera
 from app.infrastructure.camera.gphoto_camera import CameraError, GPhotoCamera
+from app.infrastructure.camera.liveview import BOUNDARY, LiveViewError, live_view
 from app.infrastructure.camera.webcam_camera import WebcamCamera
 from app.infrastructure.printer.pos58_printer import POS58Printer
 from app.infrastructure.storage.cloudinary_storage import CloudinaryStorage
@@ -93,6 +95,10 @@ def build_service(cfg: Settings | None = None) -> PhotoboothService:
         cups_name=cfg.printer_cups_name,
         backend=cfg.printer_backend,  # type: ignore[arg-type]
         dry_run_dir=cfg.prints_dir,
+        band_pace_sec=cfg.printer_band_pace_sec,
+        heat_dots=cfg.printer_heat_dots,
+        heat_time=cfg.printer_heat_time,
+        heat_interval=cfg.printer_heat_interval,
     )
     storage = FileStorage(photos_dir=cfg.photos_dir)
     cloudinary = CloudinaryStorage(
@@ -129,7 +135,7 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
     cfg = cfg or settings
     booth = service or build_service(cfg)
 
-    app = FastAPI(title="BK FIRE Photobooth", version="1.0.0")
+    app = FastAPI(title="UTS Photobooth", version="1.0.0")
     app.state.service = booth
     app.state.settings = cfg
 
@@ -159,10 +165,19 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
             }
         )
 
+    def _spa_index() -> FileResponse:
+        return FileResponse(
+            FRONTEND_DIST / "index.html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+            },
+        )
+
     @app.get("/")
     async def index(request: Request):
         if spa_enabled:
-            return FileResponse(FRONTEND_DIST / "index.html")
+            return _spa_index()
         return TEMPLATES.TemplateResponse(
             "index.html",
             {
@@ -177,7 +192,42 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
 
     @app.get("/api/status")
     async def api_status() -> JSONResponse:
-        return JSONResponse(booth.status())
+        payload = booth.status()
+        payload["liveview"] = live_view.status()
+        return JSONResponse(payload)
+
+    @app.get("/api/liveview")
+    async def api_liveview():
+        """MJPEG stream from Sony USB (gphoto2 --capture-movie)."""
+        try:
+            # Probe start early so HTTP errors are JSON, not a hung stream
+            gen = live_view.iter_multipart()
+            # Force first ensure by peeking — consume is lazy, so call status after start attempt
+            first = next(gen)
+        except LiveViewError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except StopIteration as exc:
+            raise HTTPException(status_code=503, detail="Live view has no frames") from exc
+
+        def stream():
+            yield first
+            yield from gen
+
+        return StreamingResponse(
+            iterate_in_threadpool(stream()),
+            media_type=f"multipart/x-mixed-replace; boundary={BOUNDARY.decode()}",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Connection": "close",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post("/api/liveview/stop")
+    async def api_liveview_stop() -> JSONResponse:
+        live_view.stop()
+        return JSONResponse({"ok": True, **live_view.status()})
 
     @app.post("/api/capture-print")
     async def api_capture_print(
@@ -189,15 +239,18 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
         if src not in ("auto", "gphoto", "webcam", "camera"):
             raise HTTPException(
                 status_code=400,
-                detail="source phải là auto | webcam | gphoto (camera).",
+                detail="source must be auto | webcam | gphoto (camera).",
             )
         style = (dither_style or "floyd").strip().lower()
         if style not in ("comic", "floyd"):
             raise HTTPException(
                 status_code=400,
-                detail="dither_style phải là comic | floyd.",
+                detail="dither_style must be comic | floyd.",
             )
         camera_source = None if src == "auto" else ("gphoto" if src in ("gphoto", "camera") else "webcam")
+        # Live view giữ USB PTP — phải tắt trước khi chụp Sony / auto
+        if camera_source in (None, "gphoto"):
+            live_view.stop()
         try:
             result = booth.capture_and_print(
                 PrintJobRequest(faculty=faculty.strip(), dither_style=style),
@@ -211,6 +264,41 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
 
         return JSONResponse(_session_payload(result))
 
+    @app.get("/api/recent-prints")
+    async def api_recent_prints(limit: int = 6) -> JSONResponse:
+        return JSONResponse({"items": booth.recent_prints(limit=limit)})
+
+    @app.post("/api/reprint")
+    async def api_reprint(
+        photo_id: str = Form(...),
+        dither_style: str = Form(""),
+        faculty: str = Form(""),
+        copies: int = Form(1),
+    ) -> JSONResponse:
+        pid = (photo_id or "").strip()
+        if not pid:
+            raise HTTPException(status_code=400, detail="photo_id is required.")
+        style = (dither_style or "").strip().lower()
+        if style and style not in ("comic", "floyd"):
+            raise HTTPException(
+                status_code=400,
+                detail="dither_style must be comic | floyd.",
+            )
+        n = max(1, min(20, int(copies or 1)))
+        try:
+            result = booth.reprint(
+                photo_id=pid,
+                faculty=faculty.strip(),
+                dither_style=style or "floyd",
+                copies=n,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("reprint failed")
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return JSONResponse(_session_payload(result))
+
     @app.post("/api/reprint-last")
     async def api_reprint_last(
         dither_style: str = Form(""),
@@ -221,7 +309,7 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
         if style and style not in ("comic", "floyd"):
             raise HTTPException(
                 status_code=400,
-                detail="dither_style phải là comic | floyd.",
+                detail="dither_style must be comic | floyd.",
             )
         n = max(1, min(20, int(copies or 1)))
         try:
@@ -270,7 +358,7 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
         if booth.guest_assets(photo_id) is None:
             raise HTTPException(status_code=404, detail="Photo not found")
         if spa_enabled:
-            return FileResponse(FRONTEND_DIST / "index.html")
+            return _spa_index()
         assets = booth.guest_assets(photo_id) or {}
         return TEMPLATES.TemplateResponse(
             "photo.html",

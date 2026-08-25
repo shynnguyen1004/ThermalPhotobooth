@@ -143,7 +143,9 @@ class WebcamCamera:
         try:
             with Image.open(raw) as image:
                 image = ImageOps.exif_transpose(image)
+                # Mirror ngang — khớp preview selfie (CSS scaleX(-1)) người dùng đã quen nhìn.
                 portrait = self._to_portrait_crop(image.convert("RGB"))
+                portrait = ImageOps.mirror(portrait)
                 portrait.save(dest, format="JPEG", quality=92, optimize=True)
         finally:
             raw.unlink(missing_ok=True)

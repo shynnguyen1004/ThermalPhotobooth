@@ -1,38 +1,35 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Ảnh của bạn — {{ org_name }}</title>
+  <title>Your photo — {{ org_name }}</title>
+  <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml" />
   <link rel="icon" href="/static/img/favicon.ico" sizes="any" />
-  <link rel="icon" type="image/png" href="/static/img/favicon.png" sizes="32x32" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Poppins:wght@500;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body class="guest">
   <main class="guest-card">
-    <div class="guest-logos">
-      <img src="/static/img/logo-bachkhoa.png" alt="BK TP.HCM" width="48" height="48" />
-      <img src="/static/img/logo-bkfire.png" alt="BK FIRE" width="48" height="48" />
-    </div>
-    <span class="event-pill">📸 Photobooth · Club Day 2026</span>
-    <h1>Ảnh Club Day của bạn</h1>
-    <p class="muted">Mã: {{ photo_id }}</p>
+    <img class="guest-lockup" src="/static/img/uts/lockup-full.png" alt="UTS and HCMUT" />
+    <span class="event-pill">Photobooth</span>
+    <h1>Your photo</h1>
+    <p class="muted">ID: {{ photo_id }}</p>
 
     <section class="guest-section">
-      <h2 class="guest-section__title">Ảnh màu</h2>
-      <img class="guest-photo" src="{{ photo_url }}" alt="Ảnh photobooth màu" />
-      <a class="cta cta--compact" href="{{ photo_url }}" download="bkfire-{{ photo_id }}.jpg">Tải ảnh màu</a>
+      <h2 class="guest-section__title">Color photo</h2>
+      <img class="guest-photo" src="{{ photo_url }}" alt="Color photobooth photo" />
+      <a class="cta cta--compact" href="{{ photo_url }}" download="uts-{{ photo_id }}.jpg">Download color photo</a>
     </section>
 
     {% if layout_url %}
     <section class="guest-section">
-      <h2 class="guest-section__title">Layout in</h2>
+      <h2 class="guest-section__title">Print layout</h2>
       <img class="guest-layout" src="{{ layout_url }}" alt="Layout photobooth" />
-      <a class="cta cta--compact cta--outline" href="{{ layout_url }}" download="bkfire-{{ photo_id }}-layout.png">Tải layout in</a>
+      <a class="cta cta--compact cta--outline" href="{{ layout_url }}" download="uts-{{ photo_id }}-layout.png">Download print layout</a>
     </section>
     {% endif %}
   </main>
