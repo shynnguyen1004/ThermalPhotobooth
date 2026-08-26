@@ -192,8 +192,42 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
 
     @app.get("/api/status")
     async def api_status() -> JSONResponse:
+        liveview_status = live_view.status()
+        # IMPORTANT: do not probe Sony PTP while USB live view is active.
+        # Re-probing can steal the session from `gphoto2 --capture-movie`
+        # and cause preview to drop after a few seconds.
+        if liveview_status.get("active"):
+            webcam_status = {"connected": False, "source": "webcam"}
+            webcam_obj = getattr(booth.camera, "webcam", None)
+            if webcam_obj is not None:
+                try:
+                    webcam_status = webcam_obj.check_connection()
+                except Exception as exc:  # noqa: BLE001
+                    webcam_status = {"connected": False, "source": "webcam", "error": str(exc)}
+
+            payload = {
+                "camera": {
+                    "connected": True,
+                    "source": "gphoto",
+                    "note": "Sony USB live view active",
+                },
+                "cameras": {
+                    "gphoto": {
+                        "connected": True,
+                        "source": "gphoto",
+                        "note": "Sony USB live view active",
+                    },
+                    "webcam": webcam_status,
+                },
+                "printer": booth.printer.check_connection(),
+                "cloudinary": booth.cloudinary.status() if booth.cloudinary else {"enabled": False},
+                "last_print": booth.last_print_info(),
+                "liveview": liveview_status,
+            }
+            return JSONResponse(payload)
+
         payload = booth.status()
-        payload["liveview"] = live_view.status()
+        payload["liveview"] = liveview_status
         return JSONResponse(payload)
 
     @app.get("/api/liveview")

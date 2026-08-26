@@ -260,11 +260,22 @@ input {
   z-index: 0;
 }
 
-/* Sony live view — no mirror; still cover-crop into 3:4 */
+/* Sony live view — camera mounted vertically:
+   - swap box (4:3 → 3:4 after rotate) so frame fills viewport
+   - mirror so guests can self-compose */
 .viewport__liveview {
-  transform: none;
+  inset: auto;
+  top: 50%;
+  left: 50%;
+  /* Parent is 3:4; pre-rotate box is 4:3 so rotate(90) fills exactly */
+  width: 133.333%;
+  height: 75%;
   object-fit: cover;
   object-position: center center;
+  /* After rotate(90), local Y is screen horizontal — scaleY mirrors L/R */
+  transform: translate(-50%, -50%) rotate(90deg) scaleY(-1);
+  transform-origin: center center;
+  background: #000;
 }
 
 .viewport.is-live .viewport__idle {
