@@ -53,6 +53,8 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
   const startingRef = useRef(false)
   const deviceIdRef = useRef(loadStoredDeviceId())
   const liveviewBustRef = useRef(0)
+  const preferredSonyOnceRef = useRef(false)
+  const autoPreviewOnceRef = useRef(false)
 
   const [previewWanted, setPreviewWanted] = useState(false)
   const [isLive, setIsLive] = useState(false)
@@ -93,14 +95,31 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
     setCameras(list)
 
     const current = deviceIdRef.current
+
+    // Booth default: prefer Sony USB live view whenever the body is online.
+    if (sonyConnected && !preferredSonyOnceRef.current) {
+      preferredSonyOnceRef.current = true
+      deviceIdRef.current = SONY_LIVEVIEW_ID
+      setSelectedDeviceId(SONY_LIVEVIEW_ID)
+      saveStoredDeviceId(SONY_LIVEVIEW_ID)
+      return list
+    }
+
     if (current === SONY_LIVEVIEW_ID && !sonyConnected) {
       deviceIdRef.current = ''
       setSelectedDeviceId('')
       saveStoredDeviceId('')
+      preferredSonyOnceRef.current = false
     } else if (current && current !== SONY_LIVEVIEW_ID && !list.some((c) => c.deviceId === current)) {
-      deviceIdRef.current = ''
-      setSelectedDeviceId('')
-      saveStoredDeviceId('')
+      if (sonyConnected) {
+        deviceIdRef.current = SONY_LIVEVIEW_ID
+        setSelectedDeviceId(SONY_LIVEVIEW_ID)
+        saveStoredDeviceId(SONY_LIVEVIEW_ID)
+      } else {
+        deviceIdRef.current = ''
+        setSelectedDeviceId('')
+        saveStoredDeviceId('')
+      }
     } else if (!current && list.length === 1) {
       deviceIdRef.current = list[0].deviceId
       setSelectedDeviceId(list[0].deviceId)
@@ -239,8 +258,9 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
   )
 
   const startLivePreview = useCallback(
-    async (fromUserGesture = false) => {
-      if (!wantedRef.current || busy || startingRef.current) return false
+    async (fromUserGesture = false, opts?: { ignoreBusy?: boolean }) => {
+      if (!wantedRef.current || startingRef.current) return false
+      if (busy && !opts?.ignoreBusy) return false
       startingRef.current = true
       try {
         if (deviceIdRef.current === SONY_LIVEVIEW_ID) {
@@ -259,7 +279,7 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
       wantedRef.current = on
       setPreviewWanted(on)
       if (on) {
-        await startLivePreview(fromUserGesture)
+        await startLivePreview(fromUserGesture, { ignoreBusy: true })
       } else {
         stopLivePreview()
         setSubtitle('Preview is off — tap to enable when needed')
@@ -274,7 +294,7 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
       setSelectedDeviceId(deviceId)
       saveStoredDeviceId(deviceId)
       if (wantedRef.current) {
-        await startLivePreview(true)
+        await startLivePreview(true, { ignoreBusy: true })
       }
     },
     [startLivePreview],
@@ -302,6 +322,17 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
     void refreshCameras()
   }, [sonyConnected, refreshCameras])
 
+  // Auto-select + enable Sony live view once when the body first comes online.
+  useEffect(() => {
+    if (!sonyConnected || autoPreviewOnceRef.current) return
+    autoPreviewOnceRef.current = true
+    preferredSonyOnceRef.current = true
+    deviceIdRef.current = SONY_LIVEVIEW_ID
+    setSelectedDeviceId(SONY_LIVEVIEW_ID)
+    saveStoredDeviceId(SONY_LIVEVIEW_ID)
+    void setWanted(true, false)
+  }, [sonyConnected, setWanted])
+
   useEffect(() => {
     const onVis = () => {
       if (document.hidden) {
@@ -321,17 +352,22 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
   const withPreviewPaused = useCallback(
     async <T,>(fn: () => Promise<T>): Promise<T> => {
       const resumeAfter = wantedRef.current
+      const wasSony = deviceIdRef.current === SONY_LIVEVIEW_ID
       const wasLive = !!streamRef.current || isSonyLive
       wantedRef.current = false
       setPreviewWanted(false)
       stopLivePreview()
-      await new Promise((r) => setTimeout(r, wasLive ? 400 : 0))
+      // Sony PTP needs a brief settle after liveview release before still capture.
+      await new Promise((r) => setTimeout(r, wasLive ? (wasSony ? 550 : 400) : 0))
       try {
         return await fn()
       } finally {
         wantedRef.current = resumeAfter
         setPreviewWanted(resumeAfter)
-        if (resumeAfter) await startLivePreview(false)
+        if (resumeAfter) {
+          // busy is still true in KioskPage while capture finishes — must ignore it.
+          await startLivePreview(false, { ignoreBusy: true })
+        }
       }
     },
     [isSonyLive, startLivePreview, stopLivePreview],

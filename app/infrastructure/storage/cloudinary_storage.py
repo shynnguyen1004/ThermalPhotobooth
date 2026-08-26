@@ -91,6 +91,7 @@ class CloudinaryStorage:
 
         public_id = self.public_id_for(photo_id)
         try:
+            # Hard timeout — never block the print queue on a hung CDN.
             result = cloudinary.uploader.upload(
                 str(local_path),
                 public_id=public_id,
@@ -99,6 +100,7 @@ class CloudinaryStorage:
                 format=fmt,
                 unique_filename=False,
                 use_filename=False,
+                timeout=25,
             )
         except Exception as exc:  # noqa: BLE001
             raise CloudinaryError(f"Upload Cloudinary thất bại: {exc}") from exc
