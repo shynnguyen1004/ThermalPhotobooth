@@ -21,6 +21,8 @@ class PrintJobRequest:
     qr_base_url: str = ""
     photo_id: str | None = None
     dither_style: str = "floyd"  # "comic" | "floyd"
+    copies: int = 1
+    auto_print: bool = True
 
 
 @dataclass

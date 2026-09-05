@@ -15,6 +15,7 @@ export type StatusResponse = {
   }
   printer?: DeviceInfo
   cloudinary?: DeviceInfo
+  remote?: DeviceInfo & { clients?: number }
   last_print?: {
     photo_id?: string
     layout_url?: string
@@ -60,8 +61,36 @@ export type RecentPrint = {
   captured_at?: string | null
 }
 
+export type CapturePhase =
+  | 'idle'
+  | 'countdown'
+  | 'capturing'
+  | 'processing'
+  | 'linking'
+  | 'uploading'
+  | 'printing'
+  | 'done'
+  | 'error'
+
+export type CaptureProgress = {
+  phase: CapturePhase | string
+  label?: string
+  updated_at?: number
+}
+
+export type CaptureOverlayState =
+  | { mode: 'countdown'; count: 3 | 2 | 1 }
+  | { mode: 'phase'; phase: CapturePhase; label: string }
+  | null
+
 export type AppConfig = {
   org_name: string
   cloudinary_enabled: boolean
   cloudinary_folder: string
+}
+
+export type SelfboothInfo = {
+  remote_url: string | null
+  lan_ip: string | null
+  port: number
 }

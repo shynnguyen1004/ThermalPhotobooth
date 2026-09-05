@@ -27,11 +27,55 @@ class GPhotoCamera:
         self.model_hint = model_hint
         self.timeout_sec = timeout_sec
         self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self._jpeg_configured = False
         self.ensure_macos_hotplug_disabled()
+
+    @property
+    def jpeg_configured(self) -> bool:
+        return self._jpeg_configured
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def prepare_jpeg_quality(self, force: bool = False) -> bool:
+        """Set Image Quality to JPEG once so still capture skips this step.
+
+        Safe to call when the camera is free (not in live-view / still capture).
+        Returns True when JPEG quality is already configured (or just set).
+        """
+        if self._jpeg_configured and not force:
+            return True
+
+        self.release_macos_ptp_claim()
+        time.sleep(0.15)
+
+        if _has_python_gphoto2():
+            try:
+                import gphoto2 as gp
+
+                context = gp.Context()
+                camera = gp.Camera()
+                try:
+                    camera.init(context)
+                    if self._prefer_jpeg(camera, context, gp):
+                        self._jpeg_configured = True
+                        logger.info("JPEG quality prepared once (binding) — skipped on later captures")
+                        return True
+                finally:
+                    try:
+                        camera.exit(context)
+                    except Exception:  # noqa: BLE001
+                        pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("prepare_jpeg_quality binding failed: %s", exc)
+
+        if self._prepare_jpeg_via_cli():
+            self._jpeg_configured = True
+            logger.info("JPEG quality prepared once (CLI) — skipped on later captures")
+            return True
+
+        return False
 
     def check_connection(self) -> dict:
         """Return camera status. Auto-frees PTPCamera / Imaging Edge if needed."""
@@ -174,7 +218,11 @@ class GPhotoCamera:
         try:
             camera.init(context)
             logger.info("Camera initialized (binding) — capturing %s", photo_id)
-            self._prefer_jpeg(camera, context, gp)
+            if not self._jpeg_configured:
+                if self._prefer_jpeg(camera, context, gp):
+                    self._jpeg_configured = True
+            else:
+                logger.debug("Skip imagequality — already prepared")
 
             file_path = camera.capture(gp.GP_CAPTURE_IMAGE, context)
             # Sony RAW+JPEG may emit multiple files — pull the capture event path,
@@ -384,9 +432,12 @@ class GPhotoCamera:
     # Internals
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _prefer_jpeg(camera, context, gp) -> None:
-        """Force JPEG-only quality when the camera exposes imagequality."""
+    def _prefer_jpeg(self, camera, context, gp) -> bool:
+        """Force JPEG-only quality when the camera exposes imagequality.
+
+        Returns True if a JPEG (non-RAW) quality value was applied successfully.
+        """
+        applied = False
         try:
             config = camera.get_config(context)
             try:
@@ -413,6 +464,7 @@ class GPhotoCamera:
                         child.set_value(choice)
                         camera.set_config(config, context)
                         logger.info("Set imagequality → %s", choice)
+                        applied = True
                         break
                     except gp.GPhoto2Error:
                         continue
@@ -431,6 +483,29 @@ class GPhotoCamera:
                         continue
         except gp.GPhoto2Error as exc:
             logger.debug("Could not tune camera config: %s", exc)
+        return applied
+
+    def _prepare_jpeg_via_cli(self) -> bool:
+        gphoto2_bin = _which("gphoto2")
+        if not gphoto2_bin:
+            return False
+        detected = self._auto_detect()
+        port = detected.get("port") if detected else None
+        for value in ("Standard", "Fine", "Extra Fine", "JPEG", "Normal"):
+            cmd = [gphoto2_bin, "--set-config", f"imagequality={value}"]
+            if port:
+                cmd[1:1] = ["--port", port]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=12,
+            )
+            if result.returncode == 0:
+                logger.info("Set imagequality → %s (CLI)", value)
+                return True
+        return False
 
 
 def _which(binary: str) -> Optional[str]:

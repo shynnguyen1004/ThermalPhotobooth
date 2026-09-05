@@ -344,34 +344,52 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
     document.addEventListener('visibilitychange', onVis)
     return () => {
       document.removeEventListener('visibilitychange', onVis)
-      wantedRef.current = false
-      stopLivePreview()
     }
   }, [busy, startLivePreview, stopLivePreview])
 
+  // Only kill preview intent when the hook unmounts (leave kiosk page).
+  useEffect(() => {
+    return () => {
+      wantedRef.current = false
+      stopLivePreview()
+    }
+  }, [stopLivePreview])
+
   const withPreviewPaused = useCallback(
-    async <T,>(fn: () => Promise<T>): Promise<T> => {
+    async <T,>(
+      fn: () => Promise<T>,
+      opts?: { resume?: boolean },
+    ): Promise<T> => {
+      const shouldResume = opts?.resume !== false
       const resumeAfter = wantedRef.current
       const wasSony = deviceIdRef.current === SONY_LIVEVIEW_ID
       const wasLive = !!streamRef.current || isSonyLive
-      wantedRef.current = false
-      setPreviewWanted(false)
+      // Keep wanted intent; only stop the stream for PTP still capture.
       stopLivePreview()
       // Sony PTP needs a brief settle after liveview release before still capture.
       await new Promise((r) => setTimeout(r, wasLive ? (wasSony ? 550 : 400) : 0))
       try {
         return await fn()
       } finally {
-        wantedRef.current = resumeAfter
-        setPreviewWanted(resumeAfter)
-        if (resumeAfter) {
-          // busy is still true in KioskPage while capture finishes — must ignore it.
+        if (shouldResume && resumeAfter) {
+          wantedRef.current = true
+          setPreviewWanted(true)
+          // Give Sony a moment after still capture before reclaiming live view.
+          await new Promise((r) => setTimeout(r, wasSony ? 700 : 200))
           await startLivePreview(false, { ignoreBusy: true })
         }
       }
     },
     [isSonyLive, startLivePreview, stopLivePreview],
   )
+
+  const resumePreview = useCallback(async () => {
+    wantedRef.current = true
+    setPreviewWanted(true)
+    const wasSony = deviceIdRef.current === SONY_LIVEVIEW_ID
+    await new Promise((r) => setTimeout(r, wasSony ? 500 : 100))
+    await startLivePreview(false, { ignoreBusy: true })
+  }, [startLivePreview])
 
   return {
     videoRef,
@@ -386,6 +404,7 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
     setWanted,
     updateResBadge,
     withPreviewPaused,
+    resumePreview,
     cameras,
     selectedDeviceId,
     selectCamera,

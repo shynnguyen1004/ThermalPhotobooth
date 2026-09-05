@@ -30,12 +30,14 @@ export function useDeviceStatus(busy: boolean) {
   const webcam = status.cameras?.webcam || emptyDevice
   const printer = status.printer || emptyDevice
   const cloudinary = status.cloudinary || emptyDevice
+  const remote = status.remote || emptyDevice
 
   return {
     gphoto,
     webcam,
     printer,
     cloudinary,
+    remote,
     lastPrint,
     setLastPrint,
     refresh,

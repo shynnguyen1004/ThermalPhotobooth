@@ -1,10 +1,12 @@
 import type {
   AppConfig,
+  CaptureProgress,
   CaptureResult,
   CaptureSource,
   DitherStyle,
   GuestPhotoAssets,
   RecentPrint,
+  SelfboothInfo,
   StatusResponse,
 } from '../types'
 
@@ -19,6 +21,12 @@ export async function fetchStatus(): Promise<StatusResponse> {
   return res.json()
 }
 
+export async function fetchCaptureProgress(): Promise<CaptureProgress> {
+  const res = await fetch('/api/capture-progress')
+  if (!res.ok) return { phase: 'idle' }
+  return (await res.json()) as CaptureProgress
+}
+
 export async function fetchConfig(): Promise<AppConfig> {
   const res = await fetch('/api/config')
   if (!res.ok) {
@@ -28,6 +36,12 @@ export async function fetchConfig(): Promise<AppConfig> {
       cloudinary_folder: '',
     }
   }
+  return res.json()
+}
+
+export async function fetchSelfboothInfo(): Promise<SelfboothInfo> {
+  const res = await fetch('/api/selfbooth/info')
+  if (!res.ok) throw new Error(await readError(res))
   return res.json()
 }
 
@@ -48,13 +62,22 @@ export async function stopLiveView(): Promise<void> {
   await fetch('/api/liveview/stop', { method: 'POST' }).catch(() => {})
 }
 
+export async function pingRemote(clientId: string): Promise<void> {
+  const body = new FormData()
+  body.append('client_id', clientId)
+  await fetch('/api/remote/ping', { method: 'POST', body }).catch(() => {})
+}
+
 export async function capturePrint(
   source: CaptureSource,
   ditherStyle: DitherStyle,
+  opts?: { copies?: number; autoPrint?: boolean },
 ): Promise<CaptureResult> {
   const body = new FormData()
   body.append('source', source)
   body.append('dither_style', ditherStyle)
+  body.append('copies', String(Math.max(1, Math.min(20, opts?.copies ?? 1))))
+  body.append('auto_print', opts?.autoPrint === false ? 'false' : 'true')
   const res = await fetch('/api/capture-print', { method: 'POST', body })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.detail || res.statusText || 'Unknown error')

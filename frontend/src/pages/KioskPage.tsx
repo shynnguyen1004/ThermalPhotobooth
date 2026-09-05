@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { capturePrint, fetchRecentPrints, reprintPhoto } from '../api/client'
+import { CaptureOverlay } from '../components/CaptureOverlay'
+import { RemoteQrPanel } from '../components/RemoteQrPanel'
+import { useTargetCursor } from '../context/TargetCursorContext'
+import { useCaptureOverlay } from '../hooks/useCaptureOverlay'
 import { useDeviceStatus } from '../hooks/useDeviceStatus'
 import { useLivePreview } from '../hooks/useLivePreview'
 import type { CaptureResult, CaptureSource, DitherStyle, DotKind, RecentPrint } from '../types'
@@ -16,15 +20,34 @@ export function KioskPage() {
   const [busy, setBusy] = useState(false)
   const [ditherStyle, setDitherStyle] = useState<DitherStyle>('floyd')
   const [copies, setCopies] = useState(1)
+  const [autoPrint, setAutoPrint] = useState(() => {
+    try {
+      const stored = localStorage.getItem('photobooth-auto-print')
+      if (stored === null) return true
+      return stored === 'true'
+    } catch {
+      return true
+    }
+  })
   const [toast, setToast] = useState<{ text: string; kind?: 'busy' | 'ok' | 'err' } | null>(null)
   const [recent, setRecent] = useState<RecentPrint[]>([])
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [historyBust, setHistoryBust] = useState(0)
+  const { enabled: targetCursorOn, toggle: toggleTargetCursor } = useTargetCursor()
+  const {
+    overlay,
+    runCountdown,
+    startPolling,
+    stopPolling,
+    showPhase,
+    clearOverlay,
+  } = useCaptureOverlay()
 
-  const { gphoto, webcam, printer, cloudinary, lastPrint, setLastPrint, refresh } =
+  const { gphoto, webcam, printer, cloudinary, remote, lastPrint, setLastPrint, refresh } =
     useDeviceStatus(busy)
   const camOk = !!gphoto.connected
   const webOk = !!webcam.connected
+  const remoteOk = !!remote.connected
   const {
     videoRef,
     previewWanted,
@@ -38,6 +61,7 @@ export function KioskPage() {
     setWanted,
     updateResBadge,
     withPreviewPaused,
+    resumePreview,
     cameras,
     selectedDeviceId,
     selectCamera,
@@ -63,6 +87,14 @@ export function KioskPage() {
     return () => window.clearTimeout(id)
   }, [toast])
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('photobooth-auto-print', String(autoPrint))
+    } catch {
+      /* ignore */
+    }
+  }, [autoPrint])
+
   function showStatus(text: string, kind?: 'busy' | 'ok' | 'err') {
     setToast({ text, kind })
     if (!isLive && kind !== 'ok') setSubtitle(text)
@@ -85,17 +117,37 @@ export function KioskPage() {
     )
   }
 
-  async function runCapture(source: CaptureSource, busyLabel: string) {
+  async function runCapture(source: CaptureSource) {
+    const n = Math.max(1, Math.min(20, copies || 1))
+    setCopies(n)
     setBusy(true)
-    showStatus(busyLabel, 'busy')
-    const doRequest = () => capturePrint(source, ditherStyle)
+    showStatus(autoPrint ? 'Get ready…' : 'Get ready (save only)…', 'busy')
     try {
-      const data = await withPreviewPaused(doRequest)
-      showStatus(data.message || 'Done', data.printed ? 'ok' : 'err')
+      // Countdown while live preview is still visible, then shutter.
+      await runCountdown()
+      showPhase('capturing', 'Capturing…')
+      startPolling()
+      const data = await withPreviewPaused(
+        () => capturePrint(source, ditherStyle, { copies: n, autoPrint }),
+        { resume: false },
+      )
+      stopPolling()
+      const ok = !!(data.printed || !autoPrint)
+      showPhase('done', ok ? (data.printed ? 'Done' : 'Saved') : 'Finished')
+      showStatus(data.message || 'Done', ok ? 'ok' : 'err')
       rememberResult(data)
       setSelectedIds([data.photo_id])
+      await new Promise((r) => window.setTimeout(r, 2000))
+      clearOverlay()
+      await resumePreview()
     } catch (err) {
-      showStatus(String(err instanceof Error ? err.message : err), 'err')
+      stopPolling()
+      const msg = String(err instanceof Error ? err.message : err)
+      showPhase('error', 'Capture failed')
+      showStatus(msg, 'err')
+      await new Promise((r) => window.setTimeout(r, 2000))
+      clearOverlay()
+      await resumePreview()
     } finally {
       setBusy(false)
       void refresh()
@@ -110,6 +162,8 @@ export function KioskPage() {
     const n = Math.max(1, Math.min(20, copies || 1))
     setCopies(n)
     setBusy(true)
+    showPhase('processing', 'Processing…')
+    startPolling()
     showStatus(
       selectedIds.length > 1
         ? `Reprinting ${selectedIds.length} photos × ${n} copies…`
@@ -123,10 +177,18 @@ export function KioskPage() {
       for (const photoId of selectedIds) {
         last = await reprintPhoto(photoId, ditherStyle, n)
       }
+      stopPolling()
+      showPhase('done', 'Done')
       showStatus(last?.message || 'Done', last?.printed ? 'ok' : 'err')
       if (last) rememberResult(last)
+      await new Promise((r) => window.setTimeout(r, 2000))
+      clearOverlay()
     } catch (err) {
+      stopPolling()
+      showPhase('error', 'Reprint failed')
       showStatus(String(err instanceof Error ? err.message : err), 'err')
+      await new Promise((r) => window.setTimeout(r, 2000))
+      clearOverlay()
     } finally {
       setBusy(false)
       void refresh()
@@ -181,6 +243,14 @@ export function KioskPage() {
             </div>
             <div className="sys-item">
               <span className="sys-sep">·</span>
+              <span className={dotClass(deviceDot(remoteOk))} />
+              <span className="sys-label">Remote:</span>
+              <span className={`sys-value${remoteOk ? '' : ' is-warn'}`}>
+                {remoteOk ? 'connected' : 'unconnected'}
+              </span>
+            </div>
+            <div className="sys-item">
+              <span className="sys-sep">·</span>
               <span className={dotClass(lastPrint?.photo_id ? 'ok' : 'muted')} />
               <span className="sys-label">Last:</span>
               <span className="sys-value">
@@ -217,12 +287,41 @@ export function KioskPage() {
             </label>
           </fieldset>
 
+          <label className="copies-chip copies-chip--rail" htmlFor="captureCopies">
+            <span>Copies</span>
+            <input
+              id="captureCopies"
+              type="number"
+              min={1}
+              max={20}
+              value={copies}
+              inputMode="numeric"
+              aria-label="Print copies"
+              disabled={busy || !autoPrint}
+              onChange={(e) => setCopies(Number.parseInt(e.target.value || '1', 10) || 1)}
+            />
+          </label>
+
+          <button
+            type="button"
+            className="print-toggle"
+            aria-pressed={autoPrint}
+            disabled={busy}
+            title="Toggle automatic printing after capture"
+            onClick={() => setAutoPrint((on) => !on)}
+          >
+            Auto print <span>{autoPrint ? 'ON' : 'OFF'}</span>
+          </button>
+
+          <div className="control-panel__bottom">
+          <RemoteQrPanel />
+
           <div className="actions actions--rail" role="group" aria-label="Capture and print">
             <button
               className="btn btn--primary btn--rail"
               type="button"
               disabled={busy || !camOk}
-              onClick={() => void runCapture('gphoto', 'Capturing with camera → Cloudinary → print…')}
+              onClick={() => void runCapture('gphoto')}
             >
               <img src="/img/icons/icon-camera.svg" alt="" width={22} height={22} />
               <span className="btn__text">
@@ -234,7 +333,7 @@ export function KioskPage() {
               className="btn btn--primary btn--solid btn--rail"
               type="button"
               disabled={busy || !webOk}
-              onClick={() => void runCapture('webcam', 'Capturing with webcam → Cloudinary → print…')}
+              onClick={() => void runCapture('webcam')}
             >
               <img src="/img/icons/icon-webcam.svg" alt="" width={22} height={22} />
               <span className="btn__text">
@@ -255,6 +354,7 @@ export function KioskPage() {
             <br />
             Made for TNE Commencement Day 2026
           </p>
+          </div>
         </aside>
 
         <div className="stage-center">
@@ -339,13 +439,25 @@ export function KioskPage() {
               </label>
             )}
             <div className="res-badge">{resBadge}</div>
+            <CaptureOverlay state={overlay} />
           </section>
         </div>
 
         <aside className="stage-panel stage-panel--right history-panel" aria-label="Recent prints">
           <div className="history-panel__head">
             <h2>Recent prints</h2>
-            <span className="history-panel__meta">{selectedIds.length}/6 selected</span>
+            <div className="history-panel__head-actions">
+              <span className="history-panel__meta">{selectedIds.length}/6 selected</span>
+              <button
+                type="button"
+                className="cursor-toggle"
+                aria-pressed={targetCursorOn}
+                title="Toggle custom cursor effect"
+                onClick={toggleTargetCursor}
+              >
+                Cursor <span>{targetCursorOn ? 'ON' : 'OFF'}</span>
+              </button>
+            </div>
           </div>
           <p className="history-panel__hint">Color layouts (Cloudinary) — last 6 prints</p>
 

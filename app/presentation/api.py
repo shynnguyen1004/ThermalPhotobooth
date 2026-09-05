@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import threading
+import time
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+import qrcode
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import iterate_in_threadpool
@@ -18,6 +24,8 @@ from app.domain.models import PrintJobRequest
 from app.infrastructure.camera.auto_camera import AutoCamera
 from app.infrastructure.camera.gphoto_camera import CameraError, GPhotoCamera
 from app.infrastructure.camera.liveview import BOUNDARY, LiveViewError, live_view
+from app.infrastructure.network import get_lan_ip, remote_control_url
+from app.infrastructure.remote_presence import remote_presence
 from app.infrastructure.camera.webcam_camera import WebcamCamera
 from app.infrastructure.printer.pos58_printer import POS58Printer
 from app.infrastructure.storage.cloudinary_storage import CloudinaryStorage
@@ -131,9 +139,34 @@ def build_service(cfg: Settings | None = None) -> PhotoboothService:
     )
 
 
+def _warmup_gphoto_jpeg(gphoto: GPhotoCamera) -> None:
+    """Set Image Quality once in the background so capture skips that PTP round-trip."""
+
+    def _run() -> None:
+        # Let USB / app settle before claiming the camera.
+        time.sleep(1.5)
+        for attempt in range(1, 4):
+            try:
+                if live_view.active:
+                    time.sleep(2.0)
+                    continue
+                if gphoto.prepare_jpeg_quality():
+                    return
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("JPEG warmup attempt %s failed: %s", attempt, exc)
+            time.sleep(1.5 * attempt)
+        logger.debug("JPEG warmup skipped — will set on first capture if needed")
+
+    threading.Thread(target=_run, name="gphoto-jpeg-warmup", daemon=True).start()
+
+
 def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService] = None) -> FastAPI:
     cfg = cfg or settings
     booth = service or build_service(cfg)
+    # Warm JPEG quality once while the booth is idle (not on every shutter).
+    gphoto_cam = getattr(getattr(booth, "camera", None), "gphoto", None)
+    if isinstance(gphoto_cam, GPhotoCamera):
+        _warmup_gphoto_jpeg(gphoto_cam)
 
     app = FastAPI(title="UTS Photobooth", version="1.0.0")
     app.state.service = booth
@@ -165,6 +198,49 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
             }
         )
 
+    def _selfbooth_port() -> int:
+        return int(os.environ.get("PORT", cfg.port))
+
+    def _selfbooth_payload() -> dict:
+        port = _selfbooth_port()
+        lan_ip = get_lan_ip()
+        return {
+            "remote_url": remote_control_url(lan_ip, port),
+            "lan_ip": lan_ip,
+            "port": port,
+        }
+
+    @app.get("/api/selfbooth/info")
+    async def api_selfbooth_info() -> JSONResponse:
+        """LAN URL for phone remote — updates when WiFi / hotspot changes."""
+        return JSONResponse(_selfbooth_payload())
+
+    @app.get("/api/selfbooth/qr.png")
+    async def api_selfbooth_qr() -> Response:
+        payload = _selfbooth_payload()
+        url = payload.get("remote_url")
+        if not url:
+            raise HTTPException(
+                status_code=503,
+                detail="No LAN IP detected. Connect Mac to WiFi or hotspot.",
+            )
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=8,
+            border=2,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        return Response(
+            content=buf.getvalue(),
+            media_type="image/png",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
     def _spa_index() -> FileResponse:
         return FileResponse(
             FRONTEND_DIST / "index.html",
@@ -173,6 +249,12 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
                 "Pragma": "no-cache",
             },
         )
+
+    @app.get("/remote")
+    async def remote_control_page():
+        if spa_enabled:
+            return _spa_index()
+        raise HTTPException(status_code=404, detail="Remote UI requires frontend build")
 
     @app.get("/")
     async def index(request: Request):
@@ -223,12 +305,20 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
                 "cloudinary": booth.cloudinary.status() if booth.cloudinary else {"enabled": False},
                 "last_print": booth.last_print_info(),
                 "liveview": liveview_status,
+                "remote": remote_presence.status(),
             }
             return JSONResponse(payload)
 
         payload = booth.status()
         payload["liveview"] = liveview_status
+        payload["remote"] = remote_presence.status()
         return JSONResponse(payload)
+
+    @app.post("/api/remote/ping")
+    async def api_remote_ping(client_id: str = Form("")) -> JSONResponse:
+        """Heartbeat from /remote — keeps desktop system bar in sync."""
+        remote_presence.ping(client_id)
+        return JSONResponse({"ok": True, **remote_presence.status()})
 
     @app.get("/api/liveview")
     async def api_liveview():
@@ -263,11 +353,17 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
         live_view.stop()
         return JSONResponse({"ok": True, **live_view.status()})
 
+    @app.get("/api/capture-progress")
+    async def api_capture_progress() -> JSONResponse:
+        return JSONResponse(booth.progress())
+
     @app.post("/api/capture-print")
     async def api_capture_print(
         source: str = Form("auto"),
         dither_style: str = Form("floyd"),
         faculty: str = Form(""),
+        copies: int = Form(1),
+        auto_print: str = Form("true"),
     ) -> JSONResponse:
         src = (source or "auto").strip().lower()
         if src not in ("auto", "gphoto", "webcam", "camera"):
@@ -281,18 +377,30 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
                 status_code=400,
                 detail="dither_style must be comic | floyd.",
             )
+        n = max(1, min(20, int(copies or 1)))
+        do_print = str(auto_print or "true").strip().lower() in ("1", "true", "yes", "on")
         camera_source = None if src == "auto" else ("gphoto" if src in ("gphoto", "camera") else "webcam")
+        booth.set_progress("capturing", "Capturing…")
         # Live view giữ USB PTP — phải tắt trước khi chụp Sony / auto
         if camera_source in (None, "gphoto"):
             live_view.stop()
         try:
-            result = booth.capture_and_print(
-                PrintJobRequest(faculty=faculty.strip(), dither_style=style),
-                camera_source=camera_source,  # type: ignore[arg-type]
+            # Run in threadpool so /api/capture-progress can be polled during capture.
+            result = await asyncio.to_thread(
+                booth.capture_and_print,
+                PrintJobRequest(
+                    faculty=faculty.strip(),
+                    dither_style=style,
+                    copies=n,
+                    auto_print=do_print,
+                ),
+                camera_source,  # type: ignore[arg-type]
             )
         except CameraError as exc:
+            booth.set_progress("error", "Capture failed")
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
+            booth.set_progress("error", "Something went wrong")
             logger.exception("capture-print failed")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -320,15 +428,20 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
             )
         n = max(1, min(20, int(copies or 1)))
         try:
-            result = booth.reprint(
-                photo_id=pid,
-                faculty=faculty.strip(),
-                dither_style=style or "floyd",
-                copies=n,
+            booth.set_progress("processing", "Processing…")
+            result = await asyncio.to_thread(
+                booth.reprint,
+                pid,
+                faculty.strip(),
+                "",
+                style or "floyd",
+                n,
             )
         except FileNotFoundError as exc:
+            booth.set_progress("error", "Reprint failed")
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
+            booth.set_progress("error", "Reprint failed")
             logger.exception("reprint failed")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         return JSONResponse(_session_payload(result))
@@ -347,14 +460,18 @@ def create_app(cfg: Settings | None = None, service: Optional[PhotoboothService]
             )
         n = max(1, min(20, int(copies or 1)))
         try:
-            result = booth.reprint_last(
-                faculty=faculty.strip(),
-                dither_style=style,
-                copies=n,
+            booth.set_progress("processing", "Processing…")
+            result = await asyncio.to_thread(
+                booth.reprint_last,
+                faculty.strip(),
+                style,
+                n,
             )
         except FileNotFoundError as exc:
+            booth.set_progress("error", "Reprint failed")
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
+            booth.set_progress("error", "Reprint failed")
             logger.exception("reprint-last failed")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         return JSONResponse(_session_payload(result))

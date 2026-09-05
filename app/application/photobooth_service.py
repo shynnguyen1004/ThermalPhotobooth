@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -83,8 +82,26 @@ class PhotoboothService:
             portrait_aspect_h=4,
         )
         self._last_print: dict | None = None
+        self._progress_lock = threading.Lock()
+        self._progress: dict = {
+            "phase": "idle",
+            "label": "",
+            "updated_at": 0.0,
+        }
         self._apply_mode(self.gphoto_mode)
         self._recover_last_print()
+
+    def set_progress(self, phase: str, label: str = "") -> None:
+        with self._progress_lock:
+            self._progress = {
+                "phase": phase,
+                "label": label or phase,
+                "updated_at": time.time(),
+            }
+
+    def progress(self) -> dict:
+        with self._progress_lock:
+            return dict(self._progress)
 
     def status(self) -> dict:
         camera_status: dict
@@ -190,83 +207,107 @@ class PhotoboothService:
         )
 
         t0 = time.perf_counter()
-        frame_paths = self._capture_burst(session_id, camera_source=source)
-        logger.info("Capture done in %.2fs (%s)", time.perf_counter() - t0, session_id)
-
-        t1 = time.perf_counter()
-        download_path = self.layout.render_photo_color(frame_paths, session_id)
-        main_photo = self.storage.archive_photo(download_path, session_id)
-
-        # Color layout for guest download (QR points at expected Cloudinary URL).
-        layout_color_path = self.layout.render_layout_color_to_path(
-            photo_paths=frame_paths,
-            qr_url="",
-            photo_id=session_id,
-        )
-
-        # Stable QR URL — print does NOT wait for Cloudinary upload.
-        download_qr, upload_note = self._download_qr_url(request.qr_base_url, session_id)
-        cloudinary_photo_url, cloudinary_layout_url = self._expected_cloudinary_urls(session_id)
-        if cloudinary_layout_url:
-            download_qr = cloudinary_layout_url
-
-        dither = request.dither_style if request.dither_style in ("comic", "floyd") else "floyd"
-        layout_path = self.layout.render_to_path(
-            photo_paths=frame_paths,
-            qr_url=download_qr,
-            photo_id=session_id,
-            dither_style=dither,  # type: ignore[arg-type]
-        )
-        logger.info("Layouts rendered in %.2fs (%s)", time.perf_counter() - t1, session_id)
-
-        register_qr = (self.layout.register_qr_url or "").strip()
-        shot_label = f"{self.burst_count} shots" if self.burst_count > 1 else "1 shot"
-        printed = False
-        style_label = "comic-dot" if dither == "comic" else "Floyd–Steinberg"
-        message = f"Captured {shot_label} ({source}, {style_label}) & rendered layout.{upload_note}"
-
-        # Upload in parallel with print — QR URL is already known (expected_url).
-        self._upload_guest_assets_async(session_id, main_photo, layout_color_path)
-
-        t2 = time.perf_counter()
         try:
-            self.printer.print_image(
-                layout_path,
-                download_url=download_qr,
-                register_url=register_qr,
-            )
-            printed = True
-            message = (
-                f"Captured {shot_label} ({source}, {style_label}), printed successfully."
-                f"{upload_note}"
-            )
-            logger.info("Print done in %.2fs (%s)", time.perf_counter() - t2, session_id)
-        except PrinterError as exc:
-            message = f"Captured & rendered, but print failed: {exc}.{upload_note}"
-            logger.exception("Print failed for %s", session_id)
+            self.set_progress("capturing", "Capturing…")
+            frame_paths = self._capture_burst(session_id, camera_source=source)
+            logger.info("Capture done in %.2fs (%s)", time.perf_counter() - t0, session_id)
 
-        logger.info(
-            "Session %s total %.2fs (print-first; Cloudinary in background)",
-            session_id,
-            time.perf_counter() - t0,
-        )
+            self.set_progress("processing", "Processing…")
+            t1 = time.perf_counter()
+            download_path = self.layout.render_photo_color(frame_paths, session_id)
+            main_photo = self.storage.archive_photo(download_path, session_id)
 
-        result = SessionResult(
-            photo_id=session_id,
-            faculty=request.faculty or "",
-            source_path=main_photo,
-            layout_path=layout_path,
-            layout_color_path=layout_color_path,
-            qr_url=download_qr,
-            printed=printed,
-            message=message,
-            cloudinary_url=cloudinary_layout_url,
-            cloudinary_photo_url=cloudinary_photo_url,
-            cloudinary_layout_url=cloudinary_layout_url,
-            frame_paths=frame_paths,
-        )
-        self._remember_print(result, camera_source=source, dither_style=dither)
-        return result
+            # Color layout for guest download (QR points at expected Cloudinary URL).
+            layout_color_path = self.layout.render_layout_color_to_path(
+                photo_paths=frame_paths,
+                qr_url="",
+                photo_id=session_id,
+            )
+
+            self.set_progress("linking", "Creating link…")
+            # Stable QR URL — print does NOT wait for Cloudinary upload.
+            download_qr, upload_note = self._download_qr_url(request.qr_base_url, session_id)
+            cloudinary_layout_url = self._expected_cloudinary_layout_url(session_id)
+            if cloudinary_layout_url:
+                download_qr = cloudinary_layout_url
+
+            dither = request.dither_style if request.dither_style in ("comic", "floyd") else "floyd"
+            layout_path = self.layout.render_to_path(
+                photo_paths=frame_paths,
+                qr_url=download_qr,
+                photo_id=session_id,
+                dither_style=dither,  # type: ignore[arg-type]
+            )
+            logger.info("Layouts rendered in %.2fs (%s)", time.perf_counter() - t1, session_id)
+
+            register_qr = (self.layout.register_qr_url or "").strip()
+            shot_label = f"{self.burst_count} shots" if self.burst_count > 1 else "1 shot"
+            printed = False
+            style_label = "comic-dot" if dither == "comic" else "Floyd–Steinberg"
+            message = f"Captured {shot_label} ({source}, {style_label}) & rendered layout.{upload_note}"
+
+            self.set_progress("uploading", "Uploading…")
+            # Upload in parallel with print — QR URL is already known (expected_url).
+            self._upload_guest_assets_async(session_id, layout_color_path)
+
+            copies = max(1, min(20, int(request.copies or 1)))
+            auto_print = bool(request.auto_print)
+            if not auto_print:
+                message = (
+                    f"Captured {shot_label} ({source}, {style_label}) — saved & uploaded, print skipped."
+                    f"{upload_note}"
+                )
+                logger.info("Auto-print off — skipped printer for %s", session_id)
+            else:
+                self.set_progress("printing", "Printing…")
+                t2 = time.perf_counter()
+                try:
+                    for i in range(copies):
+                        self.printer.print_image(
+                            layout_path,
+                            download_url=download_qr,
+                            register_url=register_qr,
+                        )
+                        if i + 1 < copies:
+                            logger.info("Capture print copy %s/%s done — pause 2s", i + 1, copies)
+                            time.sleep(2.0)
+                    printed = True
+                    copies_note = f" ×{copies}" if copies > 1 else ""
+                    message = (
+                        f"Captured {shot_label} ({source}, {style_label}), "
+                        f"printed successfully{copies_note}.{upload_note}"
+                    )
+                    logger.info("Print done in %.2fs (%s)", time.perf_counter() - t2, session_id)
+                except PrinterError as exc:
+                    message = f"Captured & rendered, but print failed: {exc}.{upload_note}"
+                    logger.exception("Print failed for %s", session_id)
+
+            logger.info(
+                "Session %s total %.2fs (print-first; Cloudinary layout in background)",
+                session_id,
+                time.perf_counter() - t0,
+            )
+
+            result = SessionResult(
+                photo_id=session_id,
+                faculty=request.faculty or "",
+                source_path=main_photo,
+                layout_path=layout_path,
+                layout_color_path=layout_color_path,
+                qr_url=download_qr,
+                printed=printed,
+                message=message,
+                cloudinary_url=cloudinary_layout_url,
+                cloudinary_photo_url=None,
+                cloudinary_layout_url=cloudinary_layout_url,
+                frame_paths=frame_paths,
+            )
+            self._remember_print(result, camera_source=source, dither_style=dither)
+            self.set_progress("done", "Done" if printed else "Finished")
+            return result
+        except Exception:
+            self.set_progress("error", "Something went wrong")
+            raise
 
     def _capture_burst(
         self,
@@ -306,11 +347,13 @@ class PhotoboothService:
             photo_id=photo_id,
         )
         main_photo = self.storage.get_photo(photo_id) or frames[0]
+        self.set_progress("linking", "Creating link…")
         download_qr, _ = self._download_qr_url(qr_base_url, photo_id)
-        cloudinary_photo_url, cloudinary_layout_url = self._expected_cloudinary_urls(photo_id)
+        cloudinary_layout_url = self._expected_cloudinary_layout_url(photo_id)
         if cloudinary_layout_url:
             download_qr = cloudinary_layout_url
 
+        self.set_progress("processing", "Processing…")
         dither = dither_style if dither_style in ("comic", "floyd") else "floyd"
         layout_path = self.layout.render_to_path(
             photo_paths=frames,
@@ -321,7 +364,9 @@ class PhotoboothService:
 
         register_qr = (self.layout.register_qr_url or "").strip()
         copies = max(1, min(20, int(copies or 1)))
-        self._upload_guest_assets_async(photo_id, main_photo, layout_color_path)
+        self.set_progress("uploading", "Uploading…")
+        self._upload_guest_assets_async(photo_id, layout_color_path)
+        self.set_progress("printing", "Printing…")
         for i in range(copies):
             self.printer.print_image(
                 layout_path,
@@ -329,7 +374,8 @@ class PhotoboothService:
                 register_url=register_qr,
             )
             if i + 1 < copies:
-                logger.info("Reprint copy %s/%s done", i + 1, copies)
+                logger.info("Reprint copy %s/%s done — pause 2s", i + 1, copies)
+                time.sleep(2.0)
 
         copies_note = f" ×{copies}" if copies > 1 else ""
         result = SessionResult(
@@ -345,11 +391,12 @@ class PhotoboothService:
                 f"({'comic-dot' if dither == 'comic' else 'Floyd–Steinberg'})."
             ),
             cloudinary_url=cloudinary_layout_url,
-            cloudinary_photo_url=cloudinary_photo_url,
+            cloudinary_photo_url=None,
             cloudinary_layout_url=cloudinary_layout_url,
             frame_paths=frames,
         )
         self._remember_print(result, dither_style=dither)
+        self.set_progress("done", "Done")
         return result
 
     def reprint_last(
@@ -388,7 +435,7 @@ class PhotoboothService:
             photo_id=session_id,
         )
         download_qr, upload_note = self._download_qr_url(qr_base_url, session_id)
-        cloudinary_photo_url, cloudinary_layout_url = self._expected_cloudinary_urls(session_id)
+        cloudinary_layout_url = self._expected_cloudinary_layout_url(session_id)
         if cloudinary_layout_url:
             download_qr = cloudinary_layout_url
 
@@ -401,7 +448,7 @@ class PhotoboothService:
         register_qr = (self.layout.register_qr_url or "").strip()
         printed = False
         message = f"Demo rendered.{upload_note}"
-        self._upload_guest_assets_async(session_id, main_photo, layout_color_path)
+        self._upload_guest_assets_async(session_id, layout_color_path)
         try:
             self.printer.print_image(
                 layout_path,
@@ -423,7 +470,7 @@ class PhotoboothService:
             printed=printed,
             message=message,
             cloudinary_url=cloudinary_layout_url,
-            cloudinary_photo_url=cloudinary_photo_url,
+            cloudinary_photo_url=None,
             cloudinary_layout_url=cloudinary_layout_url,
             frame_paths=frames,
         )
@@ -517,33 +564,29 @@ class PhotoboothService:
         target = assets.get("cloudinary_layout_url") or assets.get("layout_url")
         return str(target).strip() if target else None
 
-    def _expected_cloudinary_urls(self, photo_id: str) -> tuple[str | None, str | None]:
-        """Deterministic guest URLs (valid once background upload finishes)."""
+    def _expected_cloudinary_layout_url(self, photo_id: str) -> str | None:
+        """Deterministic guest layout URL (valid once background upload finishes)."""
         if not self.cloudinary or not self.cloudinary.enabled:
-            return None, None
+            return None
         try:
-            return (
-                self.cloudinary.expected_url(f"{photo_id}_photo", ext="jpg"),
-                self.cloudinary.expected_url(f"{photo_id}_layout", ext="png"),
-            )
+            return self.cloudinary.expected_url(f"{photo_id}_layout", ext="png")
         except CloudinaryError:
-            return None, None
+            return None
 
     def _upload_guest_assets_async(
         self,
         photo_id: str,
-        photo_path: Path,
         layout_color_path: Path,
     ) -> None:
-        """Fire-and-forget Cloudinary upload so print is never blocked."""
+        """Fire-and-forget Cloudinary layout upload so print is never blocked."""
         if not self.cloudinary or not self.cloudinary.enabled:
             return
 
         def _run() -> None:
             t0 = time.perf_counter()
-            _, _, note = self._upload_guest_assets(photo_id, photo_path, layout_color_path)
+            _, note = self._upload_guest_assets(photo_id, layout_color_path)
             logger.info(
-                "Background Cloudinary for %s finished in %.2fs%s",
+                "Background Cloudinary layout for %s finished in %.2fs%s",
                 photo_id,
                 time.perf_counter() - t0,
                 note,
@@ -554,46 +597,33 @@ class PhotoboothService:
             name=f"cloudinary-{photo_id}",
             daemon=True,
         ).start()
-        logger.info("Cloudinary upload queued in background for %s", photo_id)
+        logger.info("Cloudinary layout upload queued in background for %s", photo_id)
 
     def _upload_guest_assets(
         self,
         photo_id: str,
-        photo_path: Path,
         layout_color_path: Path,
-    ) -> tuple[str | None, str | None, str]:
-        """Upload portrait màu + layout màu lên Cloudinary. Returns (photo_url, layout_url, note)."""
+    ) -> tuple[str | None, str]:
+        """Upload color layout strip to Cloudinary. Returns (layout_url, note)."""
         if not self.cloudinary or not self.cloudinary.enabled:
-            return None, None, " (Cloudinary not configured — photos are local only)"
-        photo_asset = f"{photo_id}_photo"
+            return None, " (Cloudinary not configured — photos are local only)"
         layout_asset = f"{photo_id}_layout"
         try:
-            # Parallel uploads cut wall-clock roughly in half on good networks.
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                fut_photo = pool.submit(
-                    self.cloudinary.upload_photo,
-                    photo_path,
-                    photo_asset,
-                    image_format="jpg",
-                )
-                fut_layout = pool.submit(
-                    self.cloudinary.upload_photo,
-                    layout_color_path,
-                    layout_asset,
-                    image_format="png",
-                )
-                photo_url = fut_photo.result()
-                layout_url = fut_layout.result()
-            return photo_url, layout_url, ""
+            layout_url = self.cloudinary.upload_photo(
+                layout_color_path,
+                layout_asset,
+                image_format="png",
+            )
+            return layout_url, ""
         except CloudinaryError as exc:
             logger.exception("Cloudinary upload failed for %s", photo_id)
-            return None, None, f" Cloudinary upload error: {exc}"
+            return None, f" Cloudinary upload error: {exc}"
         except Exception as exc:  # noqa: BLE001
             logger.exception("Cloudinary upload failed for %s", photo_id)
-            return None, None, f" Cloudinary upload error: {exc}"
+            return None, f" Cloudinary upload error: {exc}"
 
     def guest_assets(self, photo_id: str) -> dict | None:
-        """Resolve download URLs for guest page (Cloudinary preferred, local fallback)."""
+        """Resolve download URLs for guest page (Cloudinary layout preferred, local fallback)."""
         photo_local = self.storage.get_photo(photo_id)
         layout_local = (
             (self.prints_dir / f"{photo_id}_layout.png")
@@ -602,11 +632,9 @@ class PhotoboothService:
         )
         has_layout = layout_local is not None and layout_local.exists()
 
-        cloud_photo: str | None = None
         cloud_layout: str | None = None
         if self.cloudinary and self.cloudinary.enabled:
             try:
-                cloud_photo = self.cloudinary.expected_url(f"{photo_id}_photo", ext="jpg")
                 cloud_layout = self.cloudinary.expected_url(f"{photo_id}_layout", ext="png")
             except CloudinaryError:
                 pass
@@ -617,7 +645,7 @@ class PhotoboothService:
         local_photo_url = f"/photos/{photo_id}.jpg"
         local_layout_url = f"/prints/{photo_id}_layout.png"
 
-        photo_url = cloud_photo or (local_photo_url if photo_local else None)
+        photo_url = local_photo_url if photo_local else None
         layout_url = cloud_layout or (local_layout_url if has_layout else None)
 
         return {
@@ -626,7 +654,7 @@ class PhotoboothService:
             "layout_url": layout_url,
             "photo_url_local": local_photo_url if photo_local else None,
             "layout_url_local": local_layout_url if has_layout else None,
-            "cloudinary_photo_url": cloud_photo,
+            "cloudinary_photo_url": None,
             "cloudinary_layout_url": cloud_layout,
         }
 
