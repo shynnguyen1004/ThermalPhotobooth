@@ -86,7 +86,8 @@ class Settings(BaseSettings):
     printer_cups_name: str = "POS58"
     # "usb" | "cups" | "file" (file = save raster only, for dry-run)
     printer_backend: str = "usb"
-    # USB pacing (0 = full-speed, không delay). Hiện không chia chunk ảnh.
+    # Pace giữa mỗi dải GS v 0 (16 dòng). Giữ 0 — sleep giữa dải gây khoảng trắng.
+    # Chỉ tăng nhẹ (vd 0.002) nếu máy in báo overflow / USB timeout.
     printer_band_pace_sec: float = 0.0
     # ESC 7 heat: dots, time, interval (interval cao → đầu nhiệt nguội hơn, ít ghost)
     printer_heat_dots: int = 7
