@@ -151,6 +151,13 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
     setResBadge('—')
   }, [stopSonyPreview, stopWebcamPreview])
 
+  const stopLivePreviewAsync = useCallback(async () => {
+    stopWebcamPreview()
+    setIsLive(false)
+    setResBadge('—')
+    await stopSonyPreview()
+  }, [stopSonyPreview, stopWebcamPreview])
+
   const startSonyLiveView = useCallback(async () => {
     stopWebcamPreview()
     setSubtitle('Connecting Sony live view…')
@@ -358,16 +365,22 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
   const withPreviewPaused = useCallback(
     async <T,>(
       fn: () => Promise<T>,
-      opts?: { resume?: boolean },
+      opts?: { resume?: boolean; alreadyStopped?: boolean; settleMs?: number },
     ): Promise<T> => {
       const shouldResume = opts?.resume !== false
       const resumeAfter = wantedRef.current
       const wasSony = deviceIdRef.current === SONY_LIVEVIEW_ID
       const wasLive = !!streamRef.current || isSonyLive
-      // Keep wanted intent; only stop the stream for PTP still capture.
-      stopLivePreview()
-      // Sony PTP needs a brief settle after liveview release before still capture.
-      await new Promise((r) => setTimeout(r, wasLive ? (wasSony ? 550 : 400) : 0))
+      if (!opts?.alreadyStopped) {
+        // Keep wanted intent; only stop the stream for PTP still capture.
+        stopLivePreview()
+        // Sony PTP needs a brief settle after liveview release before still capture.
+        const settle =
+          opts?.settleMs ?? (wasLive ? (wasSony ? 550 : 400) : 0)
+        if (settle > 0) {
+          await new Promise((r) => setTimeout(r, settle))
+        }
+      }
       try {
         return await fn()
       } finally {
@@ -405,6 +418,7 @@ export function useLivePreview(busy: boolean, sonyConnected = false) {
     updateResBadge,
     withPreviewPaused,
     resumePreview,
+    stopLivePreviewAsync,
     cameras,
     selectedDeviceId,
     selectCamera,

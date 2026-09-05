@@ -36,7 +36,7 @@ export function KioskPage() {
   const { enabled: targetCursorOn, toggle: toggleTargetCursor } = useTargetCursor()
   const {
     overlay,
-    runCountdown,
+    setOverlay,
     startPolling,
     stopPolling,
     showPhase,
@@ -62,6 +62,7 @@ export function KioskPage() {
     updateResBadge,
     withPreviewPaused,
     resumePreview,
+    stopLivePreviewAsync,
     cameras,
     selectedDeviceId,
     selectCamera,
@@ -121,16 +122,29 @@ export function KioskPage() {
     const n = Math.max(1, Math.min(20, copies || 1))
     setCopies(n)
     setBusy(true)
-    showStatus(autoPrint ? 'Get ready…' : 'Get ready (save only)…', 'busy')
+    showStatus(autoPrint ? 'Capturing…' : 'Capturing (save only)…', 'busy')
     try {
-      // Countdown while live preview is still visible, then shutter.
-      await runCountdown()
+      // 1) Release live view + fire shutter ASAP (do not wait for countdown).
+      await stopLivePreviewAsync()
+      await new Promise((r) =>
+        window.setTimeout(r, source === 'gphoto' ? 350 : 250),
+      )
+
+      const capturePromise = withPreviewPaused(
+        () => capturePrint(source, ditherStyle, { copies: n, autoPrint }),
+        { resume: false, alreadyStopped: true },
+      )
+
+      // 2) Countdown starts only after the capture request is already in flight.
+      for (const count of [3, 2, 1] as const) {
+        setOverlay({ mode: 'countdown', count })
+        await new Promise((r) => window.setTimeout(r, 1000))
+      }
+
+      // 3) After 3-2-1, follow backend phases (Processing → … → Printing).
       showPhase('capturing', 'Capturing…')
       startPolling()
-      const data = await withPreviewPaused(
-        () => capturePrint(source, ditherStyle, { copies: n, autoPrint }),
-        { resume: false },
-      )
+      const data = await capturePromise
       stopPolling()
       const ok = !!(data.printed || !autoPrint)
       showPhase('done', ok ? (data.printed ? 'Done' : 'Saved') : 'Finished')
